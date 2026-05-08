@@ -2,10 +2,12 @@ const { z } = require('zod');
 
 const addScoreSchema = z.object({
   body: z.object({
+    // Delta is per-2s-sync — well within Number range even at extreme prestige. Bounds widened
+    // alongside the SCORE_CAP lift (1e27 → 1e308) so legitimate large-batch sync (offline
+    // catch-up) isn't rejected.
     delta: z.number()
-      .int('Delta must be an integer')
-      .min(-1e27, 'Delta below minimum value')
-      .max(1e27, 'Delta exceeds maximum value'),
+      .min(-1e308, 'Delta below minimum value')
+      .max(1e308, 'Delta exceeds maximum value'),
     cps: z.number()
       .min(0, 'CPS must be non-negative')
       .optional(),

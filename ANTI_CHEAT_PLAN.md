@@ -16,7 +16,7 @@ Status: **planned, not started**. Tracked in the frontend repo as [TECHNICAL_DEB
 
 Anomaly tracking active in production, zero behavioral change for legitimate clients.
 
-### 1. Migration: `src/db/migrations/021_anti_cheat.sql`
+### 1. Migration: `src/db/migrations/022_anti_cheat.sql`
 
 ```sql
 ALTER TABLE scores ADD COLUMN last_sync_at TIMESTAMPTZ;
@@ -97,7 +97,7 @@ After clean soak signal:
 
 ## Files touched
 
-- `src/db/migrations/021_anti_cheat.sql` — **new**
+- `src/db/migrations/022_anti_cheat.sql` — **new**
 - `src/services/score-validation.service.js` — **new**
 - `src/controllers/scores.controller.js` — extend
 - `src/middleware/rateLimiter.js` — extend

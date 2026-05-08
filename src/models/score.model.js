@@ -2,9 +2,15 @@ const pool = require('../config/database');
 const logger = require('../utils/logger');
 const { InternalError, NotFoundError } = require('../utils/errors');
 
-// Threshold where JS Number() loses integer precision — used for speedrun milestone
-const INFINITY_THRESHOLD = '9007199254740991'; // Number.MAX_SAFE_INTEGER as string for BigInt comparison
-const SCORE_CAP = '1000000000000000000000000000'; // 10^27 — headroom through Prestige 22 (NUMERIC column)
+// Threshold where JS Number() loses integer precision — used for the "first infinity" speedrun
+// milestone. Independent of SCORE_CAP; players cross this long before approaching the ceiling.
+const INFINITY_THRESHOLD = '9007199254740991'; // Number.MAX_SAFE_INTEGER
+
+// Score ceiling — lifted from 1e27 to 1e308 alongside the BIGINT → NUMERIC column migration.
+// Decimal-class library on the frontend already supports far higher; column is NUMERIC so storage
+// is fine. Players will functionally never reach this; it's a defense-in-depth clamp against
+// runaway-multiplier bugs, not a balance lever.
+const SCORE_CAP = '1' + '0'.repeat(308); // 10^308
 
 /**
  * Atomically add to (or subtract from) a user's score
