@@ -1,9 +1,16 @@
 const Database = require('better-sqlite3');
 const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const logger = require('../utils/logger');
 
 const ARCHIVE_DB_SOURCE = process.env.ARCHIVE_DB_PATH || '/archive/Sad_Cat_worshipers_571556611517317120.db';
-const ARCHIVE_DB_COPY = '/tmp/discord.db';
+
+// Avoid `/tmp/discord.db` directly — `/tmp` is shared/world-writable and another process could
+// pre-create or substitute the file (TOCTOU). `mkdtempSync` returns a unique 0700 directory we
+// own, eliminating that attack surface (Sonar S5443).
+const ARCHIVE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'sad-cats-archive-'));
+const ARCHIVE_DB_COPY = path.join(ARCHIVE_DIR, 'discord.db');
 
 // Initialize SQLite connection
 let archiveDb = null;

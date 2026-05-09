@@ -6,6 +6,20 @@ const { distributeToys } = require('../models/boss.model');
 const { computeTrustFactor, computeTrustFactorAsync } = require('../services/trust.service');
 const { getDefeatedBossCount } = require('../models/boss.model');
 
+// Discord snowflake IDs are decimal integers up to ~20 digits. Validating up-front guarantees
+// any user-controlled discordId can be safely interpolated into filesystem paths or SQL
+// (Sonar S2083 / CWE-22 path traversal — admin endpoints construct backup-file paths that
+// would otherwise inherit traversal sequences from the request).
+const SNOWFLAKE_RE = /^\d{1,32}$/;
+const requireValidDiscordId = (req, res) => {
+  const id = req.params?.discordId;
+  if (!id || !SNOWFLAKE_RE.test(id)) {
+    res.status(400).json({ success: false, error: 'Invalid discordId — expected a numeric Discord snowflake' });
+    return null;
+  }
+  return id;
+};
+
 /**
  * Check if current user is admin (lightweight endpoint for frontend)
  */
@@ -93,7 +107,8 @@ const listUsers = async (req, res, next) => {
  */
 const getUser = async (req, res, next) => {
   try {
-    const { discordId } = req.params;
+    const discordId = requireValidDiscordId(req, res);
+    if (discordId === null) return;
     const result = await pool.query(
       'SELECT discord_id, username, avatar_url, score, game_state, updated_at FROM scores WHERE discord_id = $1',
       [discordId]
@@ -112,7 +127,8 @@ const getUser = async (req, res, next) => {
  */
 const setUserScore = async (req, res, next) => {
   try {
-    const { discordId } = req.params;
+    const discordId = requireValidDiscordId(req, res);
+    if (discordId === null) return;
     const { score } = req.body;
     if (score === undefined || score < 0) {
       return res.status(400).json({ success: false, error: 'Invalid score' });
@@ -140,7 +156,8 @@ const setUserScore = async (req, res, next) => {
  */
 const resetUserGameState = async (req, res, next) => {
   try {
-    const { discordId } = req.params;
+    const discordId = requireValidDiscordId(req, res);
+    if (discordId === null) return;
     const fs = require('fs');
     const path = require('path');
 
@@ -187,7 +204,8 @@ const createSnapshot = async (req, res, next) => {
   try {
     const fs = require('fs');
     const path = require('path');
-    const { discordId } = req.params;
+    const discordId = requireValidDiscordId(req, res);
+    if (discordId === null) return;
     const { label } = req.body || {};
 
     const current = await pool.query(
@@ -221,7 +239,8 @@ const listSnapshots = async (req, res, next) => {
   try {
     const fs = require('fs');
     const path = require('path');
-    const { discordId } = req.params;
+    const discordId = requireValidDiscordId(req, res);
+    if (discordId === null) return;
 
     const backupDir = path.join(__dirname, '../../backups');
     const snapshots = fs.existsSync(backupDir)
@@ -244,7 +263,8 @@ const restoreSnapshot = async (req, res, next) => {
   try {
     const fs = require('fs');
     const path = require('path');
-    const { discordId } = req.params;
+    const discordId = requireValidDiscordId(req, res);
+    if (discordId === null) return;
     const { filename } = req.body || {};
 
     if (!filename || !filename.startsWith(discordId) || filename.includes('/') || filename.includes('..')) {
@@ -279,7 +299,8 @@ const restoreSnapshot = async (req, res, next) => {
  */
 const updateUserGameState = async (req, res, next) => {
   try {
-    const { discordId } = req.params;
+    const discordId = requireValidDiscordId(req, res);
+    if (discordId === null) return;
     const { gameState, score } = req.body;
     if (!gameState || typeof gameState !== 'object') {
       return res.status(400).json({ success: false, error: 'Invalid gameState — must be a JSON object' });
@@ -850,7 +871,8 @@ const getDevPresets = (req, res) => {
  */
 const getCpsHistory = async (req, res) => {
   try {
-    const { discordId } = req.params;
+    const discordId = requireValidDiscordId(req, res);
+    if (discordId === null) return;
     const key = `cps:${discordId}`;
     const raw = await redisClient.zRange(key, 0, -1, { REV: false });
 
@@ -945,7 +967,8 @@ const toyService = require('../services/toy.service');
 
 const getUserInventory = async (req, res, next) => {
   try {
-    const { discordId } = req.params;
+    const discordId = requireValidDiscordId(req, res);
+    if (discordId === null) return;
     const [toys, toyCounts, cards, catnip, cases] = await Promise.all([
       inventoryModel.getToys(discordId, { limit: 500 }),
       inventoryModel.getToyCounts(discordId),
@@ -959,7 +982,8 @@ const getUserInventory = async (req, res, next) => {
 
 const adminGiveToys = async (req, res, next) => {
   try {
-    const { discordId } = req.params;
+    const discordId = requireValidDiscordId(req, res);
+    if (discordId === null) return;
     const { toyType, quantity = 1 } = req.body;
     if (!toyType || quantity < 1 || quantity > 50) {
       return res.status(400).json({ success: false, error: 'Invalid toyType or quantity (1-50)' });
@@ -979,7 +1003,8 @@ const adminGiveToys = async (req, res, next) => {
 
 const adminGiveCard = async (req, res, next) => {
   try {
-    const { discordId } = req.params;
+    const discordId = requireValidDiscordId(req, res);
+    if (discordId === null) return;
     const { cardId } = req.body;
     if (!cardId) return res.status(400).json({ success: false, error: 'cardId required' });
     await cardModel.insertPlayerCard(discordId, cardId);
@@ -990,7 +1015,8 @@ const adminGiveCard = async (req, res, next) => {
 
 const adminGiveCatnip = async (req, res, next) => {
   try {
-    const { discordId } = req.params;
+    const discordId = requireValidDiscordId(req, res);
+    if (discordId === null) return;
     const { amount } = req.body;
     if (!amount || amount < 1) return res.status(400).json({ success: false, error: 'amount required (>0)' });
     await cardModel.addCatnip(discordId, amount);
