@@ -485,6 +485,7 @@ const getGamblingLeaderboard = async (limit = 50, offset = 0) => {
 };
 
 module.exports = {
+  SCORE_CAP,
   addToScore,
   getTopScores,
   getTopScoresByPeriod,

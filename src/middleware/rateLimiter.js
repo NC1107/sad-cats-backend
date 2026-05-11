@@ -74,8 +74,32 @@ const scoreUpdateLimiter = rateLimit({
   }
 });
 
+/**
+ * Tight rate limiter for bot endpoints that mutate state in destructive ways
+ * (e.g. /claim-web-donations resets a counter — spam zeroes pending claims).
+ * Keyed by IP since botAuthenticated requests don't set req.user.
+ */
+const botMutationLimiter = rateLimit({
+  windowMs: WINDOW_MS,
+  max: 30, // 30/min — generous for legitimate bot batches, tight enough to detect runaway loops
+  message: {
+    success: false,
+    error: 'Too many bot mutations, please slow down'
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (req, res) => {
+    logger.warn('Bot mutation rate limit exceeded', { ip: req.ip, path: req.path });
+    res.status(429).json({
+      success: false,
+      error: 'Too many bot mutations, please slow down'
+    });
+  }
+});
+
 module.exports = {
   apiLimiter,
   authLimiter,
-  scoreUpdateLimiter
+  scoreUpdateLimiter,
+  botMutationLimiter
 };

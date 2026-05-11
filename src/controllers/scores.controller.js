@@ -1,6 +1,5 @@
 const {
   addToScore: addToScoreModel,
-  getTopScores,
   getTopScoresByPeriod,
   getScoreByDiscordId,
   getUserRank,
@@ -56,12 +55,15 @@ const addToScore = async (req, res, next) => {
       // Authenticated request from web app — identity from JWT
       const user = req.user.data;
 
-      // Per-user sync lock: prevent overlapping sync requests from inflating scores
+      // Per-user sync lock: prevent overlapping sync requests from inflating scores.
+      // Contention returns 429 (not 200) so the client doesn't read score:0 as
+      // authoritative and overwrite its local balance. The frontend's syncBackoff
+      // already handles "Too many requests" via a 60s backoff (useScoreSync).
       const lockKey = `sync_lock:${user.discordId}`;
       try {
         const locked = await redisClient.set(lockKey, '1', { NX: true, EX: 2 });
         if (!locked) {
-          return res.json({ success: true, score: { score: 0 }, skipped: true });
+          return res.status(429).json({ success: false, skipped: true, error: 'Sync in progress' });
         }
       } catch (e) {
         // Fail closed if Redis is down — prevents score inflation

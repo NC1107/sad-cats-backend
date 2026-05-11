@@ -1,6 +1,17 @@
+const crypto = require('crypto');
 const { verifyToken } = require('../services/jwt.service');
 const { AuthenticationError } = require('../utils/errors');
 const logger = require('../utils/logger');
+
+// Constant-time compare to defang timing attacks on the bot shared secret. Length
+// check first because timingSafeEqual throws on mismatched buffers.
+const safeEqualSecret = (provided, expected) => {
+  if (typeof provided !== 'string' || typeof expected !== 'string') return false;
+  const a = Buffer.from(provided);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+};
 
 /**
  * Middleware to verify JWT token and attach user to request
@@ -67,7 +78,8 @@ const optionalAuth = async (req, res, next) => {
  */
 const botOrAuth = async (req, res, next) => {
   const botSecret = req.headers['x-bot-secret'];
-  if (botSecret && botSecret === process.env.BOT_API_SECRET) {
+  const expected = process.env.BOT_API_SECRET;
+  if (botSecret && expected && safeEqualSecret(botSecret, expected)) {
     req.botAuthenticated = true;
     return next();
   }

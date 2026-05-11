@@ -8,11 +8,12 @@
 const pool = require('../config/database');
 const toyService = require('../services/toy.service');
 const inventoryModel = require('../models/inventory.model');
+const logger = require('../utils/logger');
 
 async function seedStarterToys() {
-  console.log('Fetching all users from scores table...');
+  logger.info('Fetching all users from scores table');
   const { rows: users } = await pool.query('SELECT discord_id FROM scores');
-  console.log(`Found ${users.length} users`);
+  logger.info('Users to evaluate', { count: users.length });
 
   let seeded = 0;
   let skipped = 0;
@@ -41,15 +42,15 @@ async function seedStarterToys() {
       await inventoryModel.insertToys(toys);
       seeded++;
     } catch (err) {
-      console.error(`Failed for ${user.discord_id}: ${err.message}`);
+      logger.error('Toy seed failed for user', { discordId: user.discord_id, error: err.message });
     }
   }
 
-  console.log(`Done! Seeded: ${seeded}, Skipped (already had toys): ${skipped}`);
+  logger.info('Starter toy seed complete', { seeded, skipped });
   process.exit(0);
 }
 
 seedStarterToys().catch(err => {
-  console.error('Fatal error:', err);
+  logger.error('Starter toy seed fatal', { error: err.message, stack: err.stack });
   process.exit(1);
 });

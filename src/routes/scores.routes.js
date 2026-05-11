@@ -11,7 +11,7 @@ const {
   claimWebDonations
 } = require('../controllers/scores.controller');
 const { authenticate, botOrAuth } = require('../middleware/auth');
-const { scoreUpdateLimiter, apiLimiter } = require('../middleware/rateLimiter');
+const { scoreUpdateLimiter, apiLimiter, botMutationLimiter } = require('../middleware/rateLimiter');
 const { validateRequest } = require('../middleware/validateRequest');
 const { addScoreSchema, getLeaderboardSchema, gameStateSchema } = require('../validators/score.validator');
 
@@ -66,9 +66,11 @@ router.get('/leaderboard/gambling',
   getGamblingLeaderboard
 );
 
-// Claim pending web donations (bot only)
+// Claim pending web donations (bot only). botMutationLimiter caps damage if the
+// bot secret leaks — the endpoint zeroes a counter, so spam is destructive.
 router.post('/claim-web-donations',
   botOrAuth,
+  botMutationLimiter,
   claimWebDonations
 );
 

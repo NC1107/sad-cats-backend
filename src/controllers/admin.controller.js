@@ -134,9 +134,18 @@ const setUserScore = async (req, res, next) => {
       return res.status(400).json({ success: false, error: 'Invalid score' });
     }
 
+    // Cast NUMERIC (not BIGINT — column was migrated in 021) and clamp into the
+    // [0, SCORE_CAP] range so an admin can't poke a value through the same invariant
+    // the regular addToScore enforces. Score arrives as Number (capped at 1e308 client-side)
+    // — we let pg accept it as text and cast it ourselves so values past 2^63 don't throw.
+    const { SCORE_CAP } = require('../models/score.model');
     const result = await pool.query(
-      'UPDATE scores SET score = $1::BIGINT, updated_at = NOW() WHERE discord_id = $2 RETURNING discord_id, username, score',
-      [score, discordId]
+      `UPDATE scores
+         SET score = LEAST(${SCORE_CAP}::NUMERIC, GREATEST(0, $1::NUMERIC)),
+             updated_at = NOW()
+       WHERE discord_id = $2
+       RETURNING discord_id, username, score`,
+      [String(score), discordId]
     );
     if (result.rows.length === 0) {
       return res.status(404).json({ success: false, error: 'User not found' });

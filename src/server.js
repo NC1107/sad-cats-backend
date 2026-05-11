@@ -1,4 +1,8 @@
 require('dotenv').config();
+// Validate env BEFORE anything else imports + reads process.env — crashes loudly
+// on missing required keys instead of 500-ing the first request that touches them.
+require('./config/env').validateEnv();
+
 const http = require('http');
 const app = require('./app');
 const { connectRedis } = require('./config/redis');

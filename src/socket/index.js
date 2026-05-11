@@ -155,7 +155,10 @@ const setupPostgresListener = () => {
                   discord_id: score.discord_id,
                   username: score.username,
                   avatar_url: score.avatar_url,
-                  score: typeof score.score === 'string' ? parseInt(score.score, 10) : score.score,
+                  // Forward score as-is (NUMERIC arrives as string from pg; bigints from
+                  // counters arrive as number). Stripping with parseInt() was lossy above
+                  // 2^53 after the 1e308 cap lift — frontend Decimal handles strings.
+                  score: score.score,
                   updated_at: score.updated_at,
                   game_state: score.game_state
                 }
