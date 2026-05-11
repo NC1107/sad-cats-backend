@@ -35,6 +35,13 @@ const startServer = async () => {
     await pool.query('SELECT NOW()');
     logger.info('Database connection established');
 
+    // Apply any pending schema migrations BEFORE the server starts listening.
+    // Idempotent — re-runs are no-ops once everything is applied. Failure here
+    // crashes the boot so the server never serves traffic against a stale schema.
+    // Watchtower pulls the new image, the container restarts, this runs, listen.
+    const { runMigrations } = require('./scripts/migrate');
+    await runMigrations({ logger });
+
     // Connect to Redis
     await connectRedis();
 

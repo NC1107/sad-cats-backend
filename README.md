@@ -44,11 +44,15 @@ Optional: `PORT`, `NODE_ENV`, `CORS_ORIGIN`, `JWT_EXPIRES_IN`, `JWT_ALGORITHM`, 
 
 ### Migrations
 
+**Automatic on boot.** `server.js` calls the migration runner right after the database connection check, before `app.listen()`. Every container restart applies any pending migrations idempotently; a Watchtower-triggered pull-and-restart deploys schema changes alongside code changes with no manual step.
+
+Local CLI (for one-off backfills or to inspect what's pending):
+
 ```bash
 npm run migrate
 ```
 
-Reads `src/db/migrations/*.sql` in lexical order and applies any that aren't already recorded in the `schema_migrations` tracking table. Idempotent — re-runs are no-ops. Each file runs in its own transaction.
+Reads `src/db/migrations/*.sql` in lexical order and applies any not already recorded in the `schema_migrations` tracking table. Idempotent. Each file runs in its own transaction; a failure aborts that file and crashes boot rather than leaving the schema half-applied.
 
 The `002_*` slot is intentionally skipped (renamed away early in development).
 
