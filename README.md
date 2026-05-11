@@ -44,7 +44,23 @@ Optional: `PORT`, `NODE_ENV`, `CORS_ORIGIN`, `JWT_EXPIRES_IN`, `JWT_ALGORITHM`, 
 
 ### Migrations
 
-There is no automated runner yet (tracked as issue #18). Apply SQL files in `src/db/migrations/` to your local Postgres in order (`001_*.sql`, then `003_*.sql`, …). The `002_*` slot is intentionally skipped.
+```bash
+npm run migrate
+```
+
+Reads `src/db/migrations/*.sql` in lexical order and applies any that aren't already recorded in the `schema_migrations` tracking table. Idempotent — re-runs are no-ops. Each file runs in its own transaction.
+
+The `002_*` slot is intentionally skipped (renamed away early in development).
+
+### Tests
+
+```bash
+npm test               # jest, ~0.4s
+npm run test:coverage  # jest --coverage
+npm run test:watch     # jest --watch
+```
+
+Tests live in `tests/*.test.js`. Pure unit tests for validators, helpers, and migration discovery. No DB or Redis required.
 
 ## Production deployment
 

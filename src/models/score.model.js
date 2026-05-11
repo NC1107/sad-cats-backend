@@ -90,7 +90,7 @@ const addToScore = async (scoreData) => {
       if (BigInt(row.score) >= BigInt(INFINITY_THRESHOLD)) {
         // Only record if this run hasn't already hit infinity
         // (first ever, OR new run started after last recorded infinity)
-        const result = await pool.query(`
+        const speedrunResult = await pool.query(`
           UPDATE scores SET
             infinity_reached_at = NOW(),
             best_speedrun_seconds = LEAST(
@@ -101,8 +101,8 @@ const addToScore = async (scoreData) => {
             AND (infinity_reached_at IS NULL OR infinity_reached_at < COALESCE(speedrun_run_start, created_at))
           RETURNING best_speedrun_seconds
         `, [discordId]);
-        if (result.rowCount > 0) {
-          logger.info('Speedrun recorded', { discordId, seconds: result.rows[0].best_speedrun_seconds });
+        if (speedrunResult.rowCount > 0) {
+          logger.info('Speedrun recorded', { discordId, seconds: speedrunResult.rows[0].best_speedrun_seconds });
         }
       }
     } catch (e) {
