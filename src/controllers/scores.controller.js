@@ -86,27 +86,21 @@ const addToScore = async (req, res, next) => {
       }
 
       // Server-side soft-cap validation. The maxDelta math is extracted into
-      // services/score-validation.service.js (computeMaxDelta). Two behavior
-      // changes from the inline version:
-      //
-      //  1. Elapsed-time anchor is the server-set `last_sync_at` column (not
-      //     gs.lastCalculated, which is client-controlled and forgeable). Falls
-      //     back to updated_at if last_sync_at is null on legacy rows that
-      //     pre-date migration 022.
-      //
-      //  2. When the clamp fires, we persist a row to score_anomalies for
-      //     Phase 2 soak review. Behavior is otherwise unchanged — still
-      //     clamp + serve, no rejection in Phase 1.
+      // services/score-validation.service.js (computeMaxDelta). Elapsed-time
+      // anchor is `updated_at` — server-controlled (gs.lastCalculated is
+      // client-set and was forgeable). When the clamp fires, we persist a row
+      // to score_anomalies for Phase 2 soak review. Behavior otherwise
+      // unchanged — clamp + serve, no rejection in Phase 1.
       let validatedDelta = delta;
       if (delta > 0) {
         try {
           const existing = await pool.query(
-            'SELECT game_state, last_sync_at, updated_at FROM scores WHERE discord_id = $1',
+            'SELECT game_state, updated_at FROM scores WHERE discord_id = $1',
             [user.discordId]
           );
           const row = existing.rows[0];
           const gs = row?.game_state || {};
-          const anchorTs = row?.last_sync_at || row?.updated_at;
+          const anchorTs = row?.updated_at;
           const lastSyncMs = anchorTs ? new Date(anchorTs).getTime() : Date.now();
           const elapsedSec = Math.min(Math.max(0, (Date.now() - lastSyncMs) / 1000), 86400 * 3);
           const maxDelta = computeMaxDelta(gs, elapsedSec);

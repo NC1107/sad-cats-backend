@@ -1,23 +1,16 @@
 -- Migration: anti-cheat foundation (issue #1, Phase 1).
 --
--- Two pieces:
+-- Creates the score_anomalies append-only audit table. Phase 1 only WRITES to
+-- it (clamp/reject events get a row); Phase 2 soak-watches it to tune the
+-- Phase 3 thresholds. severity='soft' means clamped-with-warning (no behavior
+-- change); severity='hard' means rejected at the API layer.
 --
--- 1. `scores.last_sync_at` — server-set timestamp of the last successful score
---    mutation. Used as the elapsed-time anchor for the soft-cap maxDelta
---    calculation in scores.controller.js. Previously that calculation read
---    gs.lastCalculated from the persisted JSONB, which is client-set and
---    therefore forgeable — a cheater could write lastCalculated:0 then send
---    a giant delta with a huge elapsed window.
---
--- 2. `score_anomalies` — append-only audit table. Phase 1 only WRITES to it
---    (clamp/reject events get a row); Phase 2 soak-watches it to tune the
---    Phase 3 thresholds. severity='soft' means clamped-with-warning (no
---    behavior change); severity='hard' means rejected at the API layer.
-
-ALTER TABLE scores ADD COLUMN IF NOT EXISTS last_sync_at TIMESTAMPTZ;
-UPDATE scores SET last_sync_at = updated_at WHERE last_sync_at IS NULL;
-ALTER TABLE scores ALTER COLUMN last_sync_at SET DEFAULT NOW();
-ALTER TABLE scores ALTER COLUMN last_sync_at SET NOT NULL;
+-- The original draft of this migration also added a `scores.last_sync_at`
+-- column as a forge-proof elapsed-time anchor for the soft-cap calculation.
+-- That column was removed once we realized `updated_at` (already server-set
+-- on every score change via the model UPSERT) is functionally equivalent and
+-- avoids the `SET NOT NULL` failure mode for any legacy row with a NULL
+-- updated_at. anti-cheat code reads updated_at directly.
 
 CREATE TABLE IF NOT EXISTS score_anomalies (
     id           BIGSERIAL PRIMARY KEY,

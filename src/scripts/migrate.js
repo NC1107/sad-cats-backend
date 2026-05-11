@@ -31,6 +31,25 @@ const { Pool } = require('pg');
 
 const MIGRATIONS_DIR = path.join(__dirname, '..', 'db', 'migrations');
 
+// SQLSTATE codes that indicate "this migration's effects are already in the
+// database." This system was retrofitted onto a DB that had its migrations
+// applied by hand, so the first auto-run sees `schema_migrations` empty and
+// would try to re-apply every file — many of which have raw `CREATE TABLE`
+// (not `IF NOT EXISTS`). Treat these as already-applied: log a warning,
+// record the file in schema_migrations, and continue. Future runs skip it.
+//
+// Once every migration file has been recorded once, this branch never fires
+// again for legitimate operation. New migrations added going forward should
+// still be written defensively (`CREATE TABLE IF NOT EXISTS`, etc.) so they
+// remain re-runnable.
+const ALREADY_APPLIED_CODES = new Set([
+  '42P07', // duplicate_table
+  '42701', // duplicate_column
+  '42P06', // duplicate_schema
+  '42710', // duplicate_object (functions, indexes, etc.)
+  '23505', // unique_violation (seed-data INSERT colliding with existing rows)
+]);
+
 /**
  * Run any pending migrations against DATABASE_URL.
  *
@@ -87,6 +106,20 @@ async function runMigrations({ logger } = {}) {
         log.info(`  ✓ ${filename}`);
       } catch (err) {
         await client.query('ROLLBACK');
+        // "Already exists" errors mean a pre-tracking-era migration is being
+        // re-applied to a DB that already has it. Record as applied and move
+        // on — don't abort the whole run, which would block newer migrations
+        // (like 022_anti_cheat.sql) from ever reaching their turn.
+        if (ALREADY_APPLIED_CODES.has(err.code)) {
+          log.warn(`  ~ ${filename} appears already applied (SQLSTATE ${err.code}: ${err.message}); recording as applied and continuing`);
+          try {
+            await client.query('INSERT INTO schema_migrations (filename) VALUES ($1) ON CONFLICT DO NOTHING', [filename]);
+            appliedNow.push(filename);
+          } catch (recordErr) {
+            log.error(`Failed to record ${filename} as applied: ${recordErr.message}`);
+          }
+          continue;
+        }
         log.error(`  ✗ ${filename}: ${err.message}`);
         throw err;
       } finally {

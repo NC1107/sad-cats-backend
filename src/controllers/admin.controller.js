@@ -1134,23 +1134,41 @@ const listAnomalies = async (req, res, next) => {
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
     // Two queries in parallel — the page of rows + the totals for the same filter.
-    const [rows, totals] = await Promise.all([
-      pool.query(
-        `SELECT id, discord_id, kind, severity, delta::text, max_delta::text, elapsed_sec, payload, created_at
-         FROM score_anomalies
-         ${whereSql}
-         ORDER BY created_at DESC
-         LIMIT ${limit} OFFSET ${offset}`,
-        values
-      ),
-      pool.query(
-        `SELECT severity, COUNT(*)::int as n
-         FROM score_anomalies
-         ${whereSql}
-         GROUP BY severity`,
-        values
-      ),
-    ]);
+    // Defensive: if the score_anomalies table doesn't exist yet (migration 022
+    // hasn't applied), return an empty result rather than 500. This window
+    // closes after the first successful boot with the auto-migrate fix.
+    let rows, totals;
+    try {
+      [rows, totals] = await Promise.all([
+        pool.query(
+          `SELECT id, discord_id, kind, severity, delta::text, max_delta::text, elapsed_sec, payload, created_at
+           FROM score_anomalies
+           ${whereSql}
+           ORDER BY created_at DESC
+           LIMIT ${limit} OFFSET ${offset}`,
+          values
+        ),
+        pool.query(
+          `SELECT severity, COUNT(*)::int as n
+           FROM score_anomalies
+           ${whereSql}
+           GROUP BY severity`,
+          values
+        ),
+      ]);
+    } catch (err) {
+      if (err.code === '42P01') {
+        // undefined_table — migration 022 hasn't applied yet.
+        return res.json({
+          success: true,
+          anomalies: [],
+          totals: { soft: 0, hard: 0 },
+          pagination: { limit, offset, returned: 0 },
+          warning: 'score_anomalies table not present — run migrations',
+        });
+      }
+      throw err;
+    }
 
     const totalsByseverity = { soft: 0, hard: 0 };
     for (const r of totals.rows) totalsByseverity[r.severity] = r.n;
