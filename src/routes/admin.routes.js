@@ -33,6 +33,7 @@ const {
   adminRemoveToy,
   adminRemoveCard,
   getCardCatalog,
+  listAnomalies,
 } = require('../controllers/admin.controller');
 
 const router = express.Router();
@@ -71,6 +72,9 @@ router.post('/reset-infinity-leaderboard', resetInfinityLeaderboard);
 
 // Card catalog (for admin dropdowns)
 router.get('/cards', getCardCatalog);
+
+// Anti-cheat anomaly readout (Phase 2 of ANTI_CHEAT_PLAN.md)
+router.get('/anomalies', listAnomalies);
 
 // Inventory management
 router.get('/users/:discordId/inventory', getUserInventory);

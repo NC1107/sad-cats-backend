@@ -8,6 +8,7 @@ const BossModel = require('../models/boss.model');
 const { distributeToys, getDefeatedBossCount } = BossModel;
 const { SCORE_CAP } = require('../models/score.model');
 const { computeTrustFactor } = require('../services/trust.service');
+const { parsePagination } = require('../utils/pagination');
 
 // Discord snowflake IDs are decimal integers up to ~20 digits. Validating up-front guarantees
 // any user-controlled discordId can be safely interpolated into filesystem paths or SQL
@@ -1061,6 +1062,110 @@ const getCardCatalog = async (req, res, next) => {
   }
 };
 
+/**
+ * GET /api/admin/anomalies — anti-cheat readout (Phase 2 of the anti-cheat plan).
+ *
+ * Returns rows from score_anomalies. Filter by:
+ *   - discord_id : a specific user's recent activity
+ *   - kind       : exact match (e.g. 'monotonicity_prestigeLevel')
+ *   - severity   : 'soft' | 'hard'
+ *   - since      : ISO timestamp or relative (e.g. '24h', '7d') — anything `pg`
+ *                  can parse as `created_at >= NOW() - INTERVAL`
+ *   - limit / offset : standard pagination (parsePagination helper)
+ *
+ * Default ordering: most recent first.
+ *
+ * Returns:
+ *   { success, anomalies: [{id, discord_id, kind, severity, delta, max_delta,
+ *     elapsed_sec, payload, created_at}], totals: {soft, hard} }
+ *
+ * `totals` is summary counts for the same filter (excluding pagination) so the
+ * admin UI can show "100 soft / 3 hard" headline without a second roundtrip.
+ */
+const listAnomalies = async (req, res, next) => {
+  try {
+    const { discord_id, kind, severity, since } = req.query;
+    const { limit, offset } = parsePagination(req, { defaultLimit: 50, maxLimit: 200 });
+
+    const where = [];
+    const values = [];
+    if (discord_id) {
+      if (!SNOWFLAKE_RE.test(discord_id)) {
+        return res.status(400).json({ success: false, error: 'Invalid discord_id' });
+      }
+      values.push(discord_id);
+      where.push(`discord_id = $${values.length}`);
+    }
+    if (kind) {
+      // Whitelist character set so users can't smuggle SQL via the column. Our
+      // canonical kinds match this regex; anything else is by definition a
+      // typo or attack.
+      if (!/^[a-z0-9_]+$/i.test(kind)) {
+        return res.status(400).json({ success: false, error: 'Invalid kind' });
+      }
+      values.push(kind);
+      where.push(`kind = $${values.length}`);
+    }
+    if (severity) {
+      if (severity !== 'soft' && severity !== 'hard') {
+        return res.status(400).json({ success: false, error: 'severity must be soft or hard' });
+      }
+      values.push(severity);
+      where.push(`severity = $${values.length}`);
+    }
+    if (since) {
+      // Support both ISO timestamps and short relative ('24h', '7d', '30m').
+      const relMatch = /^(\d+)([smhdw])$/.exec(since);
+      if (relMatch) {
+        const unitMap = { s: 'seconds', m: 'minutes', h: 'hours', d: 'days', w: 'weeks' };
+        const interval = `${parseInt(relMatch[1], 10)} ${unitMap[relMatch[2]]}`;
+        // Interpolate the *interval string* (we just validated it) — pg can't parameterize INTERVAL.
+        where.push(`created_at >= NOW() - INTERVAL '${interval}'`);
+      } else {
+        const parsed = new Date(since);
+        if (isNaN(parsed.getTime())) {
+          return res.status(400).json({ success: false, error: 'Invalid since timestamp' });
+        }
+        values.push(parsed.toISOString());
+        where.push(`created_at >= $${values.length}`);
+      }
+    }
+
+    const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+
+    // Two queries in parallel — the page of rows + the totals for the same filter.
+    const [rows, totals] = await Promise.all([
+      pool.query(
+        `SELECT id, discord_id, kind, severity, delta::text, max_delta::text, elapsed_sec, payload, created_at
+         FROM score_anomalies
+         ${whereSql}
+         ORDER BY created_at DESC
+         LIMIT ${limit} OFFSET ${offset}`,
+        values
+      ),
+      pool.query(
+        `SELECT severity, COUNT(*)::int as n
+         FROM score_anomalies
+         ${whereSql}
+         GROUP BY severity`,
+        values
+      ),
+    ]);
+
+    const totalsByseverity = { soft: 0, hard: 0 };
+    for (const r of totals.rows) totalsByseverity[r.severity] = r.n;
+
+    res.json({
+      success: true,
+      anomalies: rows.rows,
+      totals: totalsByseverity,
+      pagination: { limit, offset, returned: rows.rows.length },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   checkAdmin,
   getStats,
@@ -1092,4 +1197,5 @@ module.exports = {
   adminRemoveToy,
   adminRemoveCard,
   getCardCatalog,
+  listAnomalies,
 };
