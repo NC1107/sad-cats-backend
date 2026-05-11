@@ -89,9 +89,6 @@ const gameStateSchema = z.object({
       // Server is authoritative for _adminVersion — frontend echoes it back so we
       // can detect stale-client overwrites (see saveFullState handler).
       _adminVersion: z.number().int().min(0).optional().default(0),
-      // Client's snapshot of its own balance at save time; informational only,
-      // the canonical balance lives in the `score` column.
-      _savedBalance: z.number().min(0).optional().default(0),
 
       // --- Settings (pass-through JSON bags — frontend owns the shape)
       settings: z.record(z.any()).optional().default({}),

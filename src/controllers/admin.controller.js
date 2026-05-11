@@ -1,10 +1,13 @@
+const fs = require('fs');
+const path = require('path');
 const pool = require('../config/database');
 const { redisClient } = require('../config/redis');
 const logger = require('../utils/logger');
 const { ADMIN_IDS } = require('../middleware/admin');
-const { distributeToys } = require('../models/boss.model');
-const { computeTrustFactor, computeTrustFactorAsync } = require('../services/trust.service');
-const { getDefeatedBossCount } = require('../models/boss.model');
+const BossModel = require('../models/boss.model');
+const { distributeToys, getDefeatedBossCount } = BossModel;
+const { SCORE_CAP } = require('../models/score.model');
+const { computeTrustFactor } = require('../services/trust.service');
 
 // Discord snowflake IDs are decimal integers up to ~20 digits. Validating up-front guarantees
 // any user-controlled discordId can be safely interpolated into filesystem paths or SQL
@@ -20,12 +23,17 @@ const requireValidDiscordId = (req, res) => {
   return id;
 };
 
+// Audit-logging helper. The admin JWT shape historically varied — some flows use
+// `req.user.data.discordId`, others use `req.user.sub`. Centralizing the fallback
+// here means a future JWT-shape refactor only has to touch one place. See issue
+// #20 for the larger plan to normalize `req.user` at the middleware boundary.
+const getActorId = (req) => req.user?.data?.discordId || req.user?.sub || null;
+
 /**
  * Check if current user is admin (lightweight endpoint for frontend)
  */
 const checkAdmin = (req, res) => {
-  const discordId = req.user?.data?.discordId || req.user?.sub;
-  res.json({ success: true, isAdmin: ADMIN_IDS.includes(discordId) });
+  res.json({ success: true, isAdmin: ADMIN_IDS.includes(getActorId(req)) });
 };
 
 /**
@@ -138,7 +146,6 @@ const setUserScore = async (req, res, next) => {
     // [0, SCORE_CAP] range so an admin can't poke a value through the same invariant
     // the regular addToScore enforces. Score arrives as Number (capped at 1e308 client-side)
     // — we let pg accept it as text and cast it ourselves so values past 2^63 don't throw.
-    const { SCORE_CAP } = require('../models/score.model');
     const result = await pool.query(
       `UPDATE scores
          SET score = LEAST(${SCORE_CAP}::NUMERIC, GREATEST(0, $1::NUMERIC)),
@@ -151,7 +158,7 @@ const setUserScore = async (req, res, next) => {
       return res.status(404).json({ success: false, error: 'User not found' });
     }
 
-    const adminId = req.user?.data?.discordId || req.user?.sub;
+    const adminId = getActorId(req);
     logger.info('Admin set user score', { adminId, targetId: discordId, newScore: score });
 
     res.json({ success: true, user: result.rows[0] });
@@ -167,8 +174,6 @@ const resetUserGameState = async (req, res, next) => {
   try {
     const discordId = requireValidDiscordId(req, res);
     if (discordId === null) return;
-    const fs = require('fs');
-    const path = require('path');
 
     // Fetch current state before wiping
     const current = await pool.query(
@@ -197,7 +202,7 @@ const resetUserGameState = async (req, res, next) => {
       [discordId, newVersion]
     );
 
-    const adminId = req.user?.data?.discordId || req.user?.sub;
+    const adminId = getActorId(req);
     logger.info('Admin reset user game state', { adminId, targetId: discordId, backupFile: filename });
 
     res.json({ success: true, user: result.rows[0], backupFile: filename });
@@ -211,8 +216,6 @@ const resetUserGameState = async (req, res, next) => {
  */
 const createSnapshot = async (req, res, next) => {
   try {
-    const fs = require('fs');
-    const path = require('path');
     const discordId = requireValidDiscordId(req, res);
     if (discordId === null) return;
     const { label } = req.body || {};
@@ -232,7 +235,7 @@ const createSnapshot = async (req, res, next) => {
     const filename = `${discordId}_${safeName}_${timestamp}.json`;
     fs.writeFileSync(path.join(backupDir, filename), JSON.stringify(current.rows[0], null, 2));
 
-    const adminId = req.user?.data?.discordId || req.user?.sub;
+    const adminId = getActorId(req);
     logger.info('Admin created snapshot', { adminId, targetId: discordId, filename });
 
     res.json({ success: true, filename });
@@ -246,8 +249,6 @@ const createSnapshot = async (req, res, next) => {
  */
 const listSnapshots = async (req, res, next) => {
   try {
-    const fs = require('fs');
-    const path = require('path');
     const discordId = requireValidDiscordId(req, res);
     if (discordId === null) return;
 
@@ -270,8 +271,6 @@ const listSnapshots = async (req, res, next) => {
  */
 const restoreSnapshot = async (req, res, next) => {
   try {
-    const fs = require('fs');
-    const path = require('path');
     const discordId = requireValidDiscordId(req, res);
     if (discordId === null) return;
     const { filename } = req.body || {};
@@ -294,7 +293,7 @@ const restoreSnapshot = async (req, res, next) => {
       [snap.score, JSON.stringify(snap.game_state), discordId]
     );
 
-    const adminId = req.user?.data?.discordId || req.user?.sub;
+    const adminId = getActorId(req);
     logger.info('Admin restored snapshot', { adminId, targetId: discordId, filename });
 
     res.json({ success: true });
@@ -336,7 +335,7 @@ const updateUserGameState = async (req, res, next) => {
       return res.status(404).json({ success: false, error: 'User not found' });
     }
 
-    const adminId = req.user?.data?.discordId || req.user?.sub;
+    const adminId = getActorId(req);
     logger.info('Admin updated user game state', { adminId, targetId: discordId, scoreSet: score !== undefined, adminVersion: gameState._adminVersion });
 
     res.json({ success: true, user: result.rows[0] });
@@ -365,7 +364,7 @@ const resetBoss = async (req, res, next) => {
       await pool.query('DELETE FROM cat_bosses');
     }
 
-    const adminId = req.user?.data?.discordId || req.user?.sub;
+    const adminId = getActorId(req);
     logger.info('Admin reset boss', { adminId, bossId: bossId || 'all' });
 
     res.json({ success: true, message: bossId ? 'Boss deleted.' : 'All bosses reset.' });
@@ -379,7 +378,6 @@ const resetBoss = async (req, res, next) => {
  */
 const getBossDetails = async (req, res, next) => {
   try {
-    const BossModel = require('../models/boss.model');
     const dateKey = BossModel.getTodayKey();
     const allBosses = await pool.query(
       'SELECT * FROM cat_bosses WHERE spawn_date = $1 ORDER BY id ASC',
@@ -423,7 +421,7 @@ const setBossHP = async (req, res, next) => {
       return res.status(404).json({ success: false, error: 'No boss found' });
     }
 
-    const adminId = req.user?.data?.discordId || req.user?.sub;
+    const adminId = getActorId(req);
     logger.info('Admin set boss HP', { adminId, hp, bossId });
 
     res.json({ success: true, boss: result.rows[0] });
@@ -453,7 +451,7 @@ const defeatBoss = async (req, res, next) => {
     }
 
     const boss = result.rows[0];
-    const adminId = req.user?.data?.discordId || req.user?.sub;
+    const adminId = getActorId(req);
     logger.info('Admin defeated boss', { adminId, bossId: boss.id });
 
     // Distribute toys to contributors (fire-and-forget)
@@ -473,7 +471,6 @@ const defeatBoss = async (req, res, next) => {
  */
 const spawnBoss = async (req, res, next) => {
   try {
-    const BossModel = require('../models/boss.model');
     const { bossIndex, level } = req.body || {};
     const dateKey = BossModel.getTodayKey();
     const parsedBossIndex = Number.isInteger(bossIndex) ? bossIndex : parseInt(bossIndex, 10);
@@ -539,7 +536,7 @@ const spawnBoss = async (req, res, next) => {
       return res.status(409).json({ success: false, error: `${chosen.name} is already spawned today` });
     }
 
-    const adminId = req.user?.data?.discordId || req.user?.sub;
+    const adminId = getActorId(req);
     logger.info('Admin spawned new boss', {
       adminId,
       bossId: result.rows[0].id,
@@ -595,7 +592,7 @@ const setFlag = async (req, res, next) => {
       return res.status(400).json({ success: false, error: 'Unknown flag' });
     }
     await redisClient.set(`config:${flag}`, String(!!enabled));
-    const adminId = req.user?.data?.discordId || req.user?.sub;
+    const adminId = getActorId(req);
     logger.info('Admin toggled flag', { adminId, flag, enabled: !!enabled });
     res.json({ success: true, flag, enabled: !!enabled });
   } catch (error) {
@@ -845,7 +842,7 @@ const loadDevPreset = async (req, res, next) => {
     }
 
     const p = DEV_PRESETS[preset];
-    const adminId = req.user?.data?.discordId || req.user?.sub;
+    const adminId = getActorId(req);
 
     // Bump _adminVersion to invalidate stale client saves
     const existing = await pool.query('SELECT game_state FROM scores WHERE discord_id = $1', [discordId]);
@@ -904,8 +901,6 @@ const getCpsHistory = async (req, res) => {
  */
 const resetAllPlayers = async (req, res, next) => {
   try {
-    const fs = require('fs');
-    const path = require('path');
 
     // Fetch all player data for backup
     const allUsers = await pool.query(
@@ -929,7 +924,7 @@ const resetAllPlayers = async (req, res, next) => {
     // Reset all players
     await pool.query(`UPDATE scores SET game_state = '{"_adminVersion": 9999}'::jsonb, score = 0, updated_at = NOW()`);
 
-    const adminId = req.user?.data?.discordId || req.user?.sub;
+    const adminId = getActorId(req);
     logger.info('Admin reset ALL players', { adminId, usersReset: allUsers.rows.length, backupFile: filename });
 
     res.json({ success: true, usersReset: allUsers.rows.length, backupFile: filename });
@@ -959,7 +954,7 @@ const resetInfinityLeaderboard = async (req, res, next) => {
          OR speedrun_run_start IS NOT NULL
     `);
 
-    const adminId = req.user?.data?.discordId || req.user?.sub;
+    const adminId = getActorId(req);
     logger.info('Admin reset infinity leaderboard', { adminId, rowsAffected: result.rowCount });
 
     res.json({ success: true, rowsReset: result.rowCount });

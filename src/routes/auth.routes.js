@@ -1,5 +1,7 @@
 const crypto = require('crypto');
 const express = require('express');
+
+const COOKIE_DOMAIN = () => process.env.COOKIE_DOMAIN || '.sad-cats.org';
 const passport = require('../config/passport');
 const {
   initiateOAuth,
@@ -28,7 +30,7 @@ router.post('/discord', authLimiter, initiateOAuth);
 router.get('/login', authLimiter, (req, res) => {
   const state = crypto.randomBytes(24).toString('hex');
   res.cookie('oauth_state', state, {
-    domain: '.sad-cats.org',
+    domain: COOKIE_DOMAIN(),
     path: '/',
     httpOnly: true,
     secure: true,

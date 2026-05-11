@@ -41,6 +41,10 @@ const schema = z.object({
 
   // --- Optional: Discord archive sqlite path
   ARCHIVE_DB_PATH: z.string().optional(),
+
+  // --- Cookie domain for auth + oauth_state cookies (defaults to .sad-cats.org;
+  //     override for staging or to test against a non-prod host).
+  COOKIE_DOMAIN: z.string().optional(),
 });
 
 function validateEnv() {

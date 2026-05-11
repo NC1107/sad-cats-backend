@@ -29,7 +29,7 @@ describe('gameStateSchema', () => {
     expect(parsed.body.gameState.dailyChallenges.claimed).toEqual([false, false, false]);
   });
 
-  test('accepts all 12 newly-tracked fields (issue #2)', () => {
+  test('accepts the newly-tracked fields (issue #2)', () => {
     const parsed = gameStateSchema.parse({
       body: {
         gameState: {
@@ -42,7 +42,6 @@ describe('gameStateSchema', () => {
           totalDailyChallengesClaimed: 9,
           cosmicPullCount: 4,
           _adminVersion: 0,
-          _savedBalance: 1234567,
           settings: { soundVolume: 0.5 },
           musicSettings: { volume: 0.3 },
         }

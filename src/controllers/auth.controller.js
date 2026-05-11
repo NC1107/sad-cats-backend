@@ -1,5 +1,10 @@
 const crypto = require('crypto');
 const { v4: uuidv4 } = require('uuid');
+
+// Cookie domain lives in env (with the prod default) so a staging deploy or local
+// host-mapped run doesn't have to fork this file. validateEnv() at boot accepts
+// COOKIE_DOMAIN as optional; we read it lazily so the variable is settable per-test.
+const COOKIE_DOMAIN = () => process.env.COOKIE_DOMAIN || '.sad-cats.org';
 const { generateToken } = require('../services/jwt.service');
 const { verifyGuildMembership } = require('../services/discord.service');
 const { blacklistToken } = require('../services/jwt.service');
@@ -50,7 +55,7 @@ const handleCallback = async (req, res, next) => {
     // token leak first because the frontend needed an in-band way to get the JWT
     // for socket auth.
     res.cookie('auth_token', token, {
-      domain: '.sad-cats.org',
+      domain: COOKIE_DOMAIN(),
       path: '/',
       httpOnly: true,
       secure: true,
@@ -110,7 +115,7 @@ const verifyOauthState = (req, res, next) => {
   const frontendUrl = process.env.CORS_ORIGIN || 'https://sad-cats.org';
   const queryState = req.query.state;
   const cookieState = req.cookies?.oauth_state;
-  res.clearCookie('oauth_state', { domain: '.sad-cats.org', path: '/' });
+  res.clearCookie('oauth_state', { domain: COOKIE_DOMAIN(), path: '/' });
 
   if (!queryState || !cookieState) {
     logger.warn('OAuth state missing', { hasQuery: !!queryState, hasCookie: !!cookieState });
@@ -145,7 +150,7 @@ const logout = async (req, res, next) => {
     if (token) {
       await blacklistToken(token);
     }
-    res.clearCookie('auth_token', { domain: '.sad-cats.org', path: '/' });
+    res.clearCookie('auth_token', { domain: COOKIE_DOMAIN(), path: '/' });
     logger.info('User logged out', { discordId: req.user?.discordId });
     res.json({ success: true, message: 'Logged out successfully' });
   } catch (error) {
@@ -174,7 +179,7 @@ const refreshToken = async (req, res, next) => {
       isMember: userData.isMember
     });
     res.cookie('auth_token', newToken, {
-      domain: '.sad-cats.org',
+      domain: COOKIE_DOMAIN(),
       path: '/',
       httpOnly: true,
       secure: true,
