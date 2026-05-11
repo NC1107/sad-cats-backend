@@ -36,11 +36,26 @@ const startServer = async () => {
     logger.info('Database connection established');
 
     // Apply any pending schema migrations BEFORE the server starts listening.
-    // Idempotent — re-runs are no-ops once everything is applied. Failure here
-    // crashes the boot so the server never serves traffic against a stale schema.
-    // Watchtower pulls the new image, the container restarts, this runs, listen.
-    const { runMigrations } = require('./scripts/migrate');
-    await runMigrations({ logger });
+    // Idempotent — re-runs are no-ops once everything is applied.
+    //
+    // Failure here does NOT crash boot. Original design crashed-on-failure
+    // (preferred safety guarantee) but a single bad migration would knock the
+    // whole API offline with no fallback path for a self-hosted operator. Now
+    // we log loudly, continue starting, and let the operator investigate at
+    // their pace. Set AUTO_MIGRATE=false to skip migrations entirely.
+    if (process.env.AUTO_MIGRATE !== 'false') {
+      try {
+        const { runMigrations } = require('./scripts/migrate');
+        await runMigrations({ logger });
+      } catch (migrationError) {
+        logger.error('AUTO_MIGRATE failed — booting anyway with the existing schema. Run `npm run migrate` manually to inspect.', {
+          error: migrationError.message,
+          stack: migrationError.stack,
+        });
+      }
+    } else {
+      logger.info('AUTO_MIGRATE disabled — skipping migrations on boot');
+    }
 
     // Connect to Redis
     await connectRedis();
