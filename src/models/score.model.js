@@ -55,7 +55,8 @@ const addToScore = async (scoreData) => {
           score = ${scoreExpr}${deltaParam}::NUMERIC${scoreEnd},
           username = EXCLUDED.username,
           avatar_url = EXCLUDED.avatar_url${gamblingExpr}${gamblingEnd},
-          updated_at = NOW()
+          updated_at = NOW(),
+          last_sync_at = NOW()
         RETURNING *;
       `;
       values = [userId, discordId, username, avatarUrl, delta];
@@ -71,7 +72,8 @@ const addToScore = async (scoreData) => {
           score = ${scoreExpr}${deltaParam}::NUMERIC${scoreEnd},
           username = EXCLUDED.username,
           avatar_url = EXCLUDED.avatar_url${gamblingExpr}${gamblingEnd},
-          updated_at = NOW()
+          updated_at = NOW(),
+          last_sync_at = NOW()
         RETURNING *;
       `;
       values = [discordId, username, avatarUrl, delta];

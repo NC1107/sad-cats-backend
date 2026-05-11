@@ -1,5 +1,7 @@
 const rateLimit = require('express-rate-limit');
 const logger = require('../utils/logger');
+const { redisClient } = require('../config/redis');
+const { recordAnomaly } = require('../services/score-validation.service');
 
 const WINDOW_MS = parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 60000; // 1 minute
 const MAX_REQUESTS = parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 120;
@@ -97,9 +99,75 @@ const botMutationLimiter = rateLimit({
   }
 });
 
+/**
+ * Delta-size token-bucket limiter for /scores/add (anti-cheat Phase 1).
+ *
+ * The existing scoreUpdateLimiter caps *requests* per minute (300). That stops
+ * spam but not a "carpet bomb 50 valid-looking large deltas per minute" attack
+ * — a cheater can stay under 300 req/min while pushing 1e25 each call.
+ *
+ * This limiter charges proportional to log10(delta) so large deltas burn the
+ * bucket faster:
+ *
+ *   cost = floor(log10(max(1, delta)) * 1e15)
+ *   budget = 1e18 tokens / minute / user
+ *
+ * Reasonable legitimate magnitudes:
+ *   delta 1e6  → cost 6e15  → ~166 such requests/min before throttle
+ *   delta 1e15 → cost 15e15 → ~66 such requests/min
+ *   delta 1e25 → cost 25e15 → ~40 such requests/min
+ *
+ * Fails open if Redis is unavailable (don't 503 legitimate users for a
+ * monitoring gap). Anomaly recorded on 429.
+ */
+const DELTA_BUDGET = 1e18;
+const DELTA_BUDGET_WINDOW_S = 60;
+
+const deltaSizeLimiter = async (req, res, next) => {
+  try {
+    const userId = req.user?.data?.discordId || req.body?.discordId || req.ip;
+    if (!userId) return next();
+    const delta = Number(req.body?.delta) || 0;
+    if (delta <= 0) return next();          // free for refunds / negative bot adjustments
+
+    const cost = Math.floor(Math.log10(Math.max(1, delta)) * 1e15);
+    const key = `delta_budget:${userId}`;
+
+    // INCRBY returns the post-increment total. If we're the first writer in the
+    // window we also have to set TTL — EXPIRE on a non-existent key is a no-op,
+    // so we use SET-NX-EX semantics via a small Lua-free dance: INCRBY then
+    // EXPIRE-NX-if-this-is-first.
+    const total = await redisClient.incrBy(key, cost);
+    if (total === cost) {
+      // First touch in this window — set TTL.
+      await redisClient.expire(key, DELTA_BUDGET_WINDOW_S);
+    }
+
+    if (total > DELTA_BUDGET) {
+      recordAnomaly(userId, 'delta_budget_exceeded', {
+        delta,
+        severity: 'hard',
+        payload: { budgetUsed: total, budget: DELTA_BUDGET, cost },
+      });
+      return res.status(429).json({
+        success: false,
+        error: 'Score sync budget exceeded — please wait a moment'
+      });
+    }
+    next();
+  } catch (e) {
+    // Fail open. The budget is a defense-in-depth gate, not the primary
+    // anti-cheat surface — losing it briefly is preferable to 503-ing real
+    // users on a Redis blip.
+    logger.warn('deltaSizeLimiter fail-open', { error: e.message });
+    next();
+  }
+};
+
 module.exports = {
   apiLimiter,
   authLimiter,
   scoreUpdateLimiter,
-  botMutationLimiter
+  botMutationLimiter,
+  deltaSizeLimiter
 };

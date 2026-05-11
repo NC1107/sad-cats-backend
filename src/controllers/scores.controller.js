@@ -18,6 +18,11 @@ const { invalidate } = require('../services/cache.service');
 const { redisClient } = require('../config/redis');
 const logger = require('../utils/logger');
 const { computeTrustFactor } = require('../services/trust.service');
+const {
+  computeMaxDelta,
+  validateMonotonicity,
+  recordAnomaly,
+} = require('../services/score-validation.service');
 
 /**
  * Atomically add to (or subtract from) a user's score
@@ -27,9 +32,17 @@ const addToScore = async (req, res, next) => {
   try {
     const { delta, discordId, username, avatarUrl, cps, clickDamage, bossId, allowNegative, source } = req.body;
 
-    // Anti-cheat: reject if CPS exceeds threshold
+    // Anti-cheat: reject if CPS exceeds threshold. Also persist the rejection
+    // to score_anomalies (severity=hard) so the soak dashboard can see how
+    // often it fires for whom — issue #1 Phase 1.
     if (cps && cps > 17) {
-      logger.warn('CPS threshold exceeded', { discordId: discordId || req.user?.data?.discordId, cps });
+      const cheatDiscordId = discordId || req.user?.data?.discordId;
+      if (cheatDiscordId) {
+        recordAnomaly(cheatDiscordId, 'cps_rejected', {
+          severity: 'hard',
+          payload: { cps },
+        });
+      }
       return res.status(400).json({
         success: false,
         error: 'Click rate too high'
@@ -72,20 +85,40 @@ const addToScore = async (req, res, next) => {
         return res.status(503).json({ error: 'Service temporarily unavailable' });
       }
 
-      // Server-side offline earnings validation (soft cap)
+      // Server-side soft-cap validation. The maxDelta math is extracted into
+      // services/score-validation.service.js (computeMaxDelta). Two behavior
+      // changes from the inline version:
+      //
+      //  1. Elapsed-time anchor is the server-set `last_sync_at` column (not
+      //     gs.lastCalculated, which is client-controlled and forgeable). Falls
+      //     back to updated_at if last_sync_at is null on legacy rows that
+      //     pre-date migration 022.
+      //
+      //  2. When the clamp fires, we persist a row to score_anomalies for
+      //     Phase 2 soak review. Behavior is otherwise unchanged — still
+      //     clamp + serve, no rejection in Phase 1.
       let validatedDelta = delta;
       if (delta > 0) {
         try {
-          const existing = await pool.query('SELECT game_state FROM scores WHERE discord_id = $1', [user.discordId]);
-          const gs = existing.rows[0]?.game_state || {};
-          const lastCalc = gs.lastCalculated || Date.now();
-          const elapsedSec = Math.min((Date.now() - lastCalc) / 1000, 86400 * 3); // max 3 days
-          const maxCps = (gs.catsPerSecond || 0) * (gs.cpsMultiplier || 1) * (gs.prestigeMultiplier || 1) * (gs.ascensionMultiplier || 1);
-          const maxAutoClick = (gs.autoClicksPerSecond || 0) * (gs.clickPower || 1) * (gs.clickMultiplier || 1) * (gs.prestigeMultiplier || 1) * (gs.ascensionMultiplier || 1);
-          const maxDelta = (maxCps + maxAutoClick) * elapsedSec * 10; // 10x grace for skills/buffs
+          const existing = await pool.query(
+            'SELECT game_state, last_sync_at, updated_at FROM scores WHERE discord_id = $1',
+            [user.discordId]
+          );
+          const row = existing.rows[0];
+          const gs = row?.game_state || {};
+          const anchorTs = row?.last_sync_at || row?.updated_at;
+          const lastSyncMs = anchorTs ? new Date(anchorTs).getTime() : Date.now();
+          const elapsedSec = Math.min(Math.max(0, (Date.now() - lastSyncMs) / 1000), 86400 * 3);
+          const maxDelta = computeMaxDelta(gs, elapsedSec);
           if (maxDelta > 0 && delta > maxDelta) {
-            logger.warn('Suspicious delta', { discordId: user.discordId, delta, maxDelta, elapsedSec });
             validatedDelta = Math.min(delta, maxDelta);
+            recordAnomaly(user.discordId, 'delta_clamped', {
+              delta,
+              maxDelta,
+              elapsedSec: Math.round(elapsedSec),
+              severity: 'soft',
+              payload: { sourceClamp: 'maxDelta' },
+            });
           }
         } catch (e) {
           // Non-blocking — don't fail score update for validation
@@ -267,6 +300,18 @@ const saveFullState = async (req, res, next) => {
     const oldAscension = oldState.ascensionLevel || 0;
     const newPrestige = gameState?.prestigeLevel || 0;
     const newAscension = gameState?.ascensionLevel || 0;
+
+    // Anti-cheat (Phase 1): monotonicity check against the persisted state.
+    // Fires anomaly records but does NOT reject — Phase 3 will flip hard
+    // violations to 422 after a one-week soak (see ANTI_CHEAT_PLAN.md).
+    try {
+      const { violations } = validateMonotonicity(oldState, gameState || {});
+      for (const v of violations) {
+        recordAnomaly(discordId, v.kind, { severity: v.severity, payload: v.payload });
+      }
+    } catch (e) {
+      logger.warn('Monotonicity validation failed', { error: e.message, discordId });
+    }
 
     let result;
     try {

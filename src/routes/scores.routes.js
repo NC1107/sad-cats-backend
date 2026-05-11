@@ -11,17 +11,22 @@ const {
   claimWebDonations
 } = require('../controllers/scores.controller');
 const { authenticate, botOrAuth } = require('../middleware/auth');
-const { scoreUpdateLimiter, apiLimiter, botMutationLimiter } = require('../middleware/rateLimiter');
+const { scoreUpdateLimiter, apiLimiter, botMutationLimiter, deltaSizeLimiter } = require('../middleware/rateLimiter');
 const { validateRequest } = require('../middleware/validateRequest');
 const { addScoreSchema, getLeaderboardSchema, gameStateSchema } = require('../validators/score.validator');
 
 const router = express.Router();
 
-// Atomically add to/subtract from score (requires JWT or bot secret)
+// Atomically add to/subtract from score (requires JWT or bot secret).
+// Two-layer rate limit: scoreUpdateLimiter caps requests per minute (300);
+// deltaSizeLimiter caps cumulative delta *magnitude* per minute (1e18 token
+// budget, cost = log10(delta) × 1e15) so a cheater can't burst 50 huge deltas
+// while staying under the request count.
 router.post('/add',
   botOrAuth,
   scoreUpdateLimiter,
   validateRequest(addScoreSchema),
+  deltaSizeLimiter,
   addToScore
 );
 

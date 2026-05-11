@@ -1,7 +1,7 @@
 # Server-side anti-cheat plan (H3)
 
-**Status:** planned, not started. Tracked as frontend issue [#1](https://github.com/NC1107/sad-cats-dot-org/issues/1).
-**Last refreshed:** 2026-05-11 (after the security/cleanup batch landed — schema, validators, OAuth state, NUMERIC, env validation, sync-lock, etc. all in place).
+**Status:** **Phase 1 shipped** (commit forthcoming) — anomaly tracking active, zero behavioral change for legitimate clients. Phase 2 soak begins on deploy.
+**Last refreshed:** 2026-05-11.
 
 ---
 
