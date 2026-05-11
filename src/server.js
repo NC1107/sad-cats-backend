@@ -98,14 +98,19 @@ const shutdown = async (signal) => {
     logger.info('HTTP server closed');
 
     try {
-      // Close database pool
-      await pool.end();
+      // Close DB / Redis / archive — each module exposes a close fn, no longer
+      // registers its own SIGINT/SIGTERM handler. Order: DB first (queries running
+      // for in-flight requests already finished above), then Redis, then archive.
+      const { closePool } = require('./config/database');
+      await closePool();
       logger.info('Database pool closed');
 
-      // Close Redis connection
-      const { redisClient } = require('./config/redis');
-      await redisClient.quit();
+      const { closeRedis } = require('./config/redis');
+      await closeRedis();
       logger.info('Redis connection closed');
+
+      const { closeArchive } = require('./config/archive');
+      closeArchive();
 
       logger.info('Graceful shutdown completed');
       process.exit(0);

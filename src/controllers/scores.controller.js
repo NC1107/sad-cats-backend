@@ -6,6 +6,7 @@ const {
   getTotalScoresCount,
   getGameState: getGameStateModel,
   saveGameState: saveGameStateModel,
+  StaleAdminVersionError,
   getSpeedrunLeaderboard: getSpeedrunLeaderboardModel,
   getAscensionLeaderboard: getAscensionLeaderboardModel,
   getGamblingLeaderboard: getGamblingLeaderboardModel
@@ -252,23 +253,30 @@ const saveFullState = async (req, res, next) => {
   try {
     const discordId = req.user.data.discordId;
     const { gameState, score } = req.body;
-
-    // Check _adminVersion — reject stale client saves
-    const existing = await pool.query('SELECT game_state FROM scores WHERE discord_id = $1', [discordId]);
-    const serverVersion = existing.rows[0]?.game_state?._adminVersion || 0;
     const clientVersion = gameState?._adminVersion || 0;
-    if (serverVersion > clientVersion) {
-      return res.status(409).json({ error: 'State outdated', refreshRequired: true });
-    }
 
-    // Detect prestige/ascension before saving (compare old vs new state)
+    // Pre-read for prestige/ascension diffing (used by the activity broadcaster below).
+    // The version guard itself is enforced inside saveGameStateModel's UPDATE WHERE
+    // clause — that's atomic with the write, so an admin bump between this read and
+    // the save no longer silently overwrites the admin's change. The pre-read here is
+    // only informational; a stale value just means we miss broadcasting an activity
+    // event on the rejected save, which is a non-issue.
+    const existing = await pool.query('SELECT game_state FROM scores WHERE discord_id = $1', [discordId]);
     const oldState = existing.rows[0]?.game_state || {};
     const oldPrestige = oldState.prestigeLevel || 0;
     const oldAscension = oldState.ascensionLevel || 0;
     const newPrestige = gameState?.prestigeLevel || 0;
     const newAscension = gameState?.ascensionLevel || 0;
 
-    const result = await saveGameStateModel(discordId, gameState, score);
+    let result;
+    try {
+      result = await saveGameStateModel(discordId, gameState, score, clientVersion);
+    } catch (e) {
+      if (e instanceof StaleAdminVersionError) {
+        return res.status(409).json({ error: 'State outdated', refreshRequired: true });
+      }
+      throw e;
+    }
 
     // Invalidate leaderboard cache when score is explicitly set (prestige/ascension reset)
     if (score !== undefined && score !== null) {

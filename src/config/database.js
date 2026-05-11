@@ -21,17 +21,13 @@ pool.on('error', (err) => {
   logger.error('Unexpected error on idle PostgreSQL client', { error: err.message });
 });
 
-// Graceful shutdown
-process.on('SIGINT', async () => {
+// Graceful close — called by server.js shutdown() so requests drain before the
+// pool ends. Previously this module registered its own SIGINT/SIGTERM handler
+// that ran in parallel with server.js's, severing in-flight queries (issue #8).
+const closePool = async () => {
   logger.info('Closing PostgreSQL pool');
   await pool.end();
-  process.exit(0);
-});
-
-process.on('SIGTERM', async () => {
-  logger.info('Closing PostgreSQL pool');
-  await pool.end();
-  process.exit(0);
-});
+};
 
 module.exports = pool;
+module.exports.closePool = closePool;

@@ -42,19 +42,18 @@ try {
   // Don't crash the server if archive DB is unavailable
 }
 
-// Graceful shutdown
-process.on('SIGINT', () => {
+// Graceful close — invoked from server.js shutdown(). Best-effort: the archive DB
+// is read-only and crash-recoverable, so we never block shutdown on it.
+const closeArchive = () => {
   if (archiveDb) {
-    archiveDb.close();
-    logger.info('Archive database closed');
+    try {
+      archiveDb.close();
+      logger.info('Archive database closed');
+    } catch (e) {
+      logger.warn('Archive close failed', { error: e.message });
+    }
   }
-});
-
-process.on('SIGTERM', () => {
-  if (archiveDb) {
-    archiveDb.close();
-    logger.info('Archive database closed');
-  }
-});
+};
 
 module.exports = archiveDb;
+module.exports.closeArchive = closeArchive;

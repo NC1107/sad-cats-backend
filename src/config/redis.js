@@ -28,18 +28,18 @@ const connectRedis = async () => {
   }
 };
 
-// Graceful shutdown
-process.on('SIGINT', async () => {
-  logger.info('Closing Redis connection');
-  await redisClient.quit();
-});
-
-process.on('SIGTERM', async () => {
-  logger.info('Closing Redis connection');
-  await redisClient.quit();
-});
+// Graceful close — server.js shutdown() owns the close sequence; this module just
+// exposes a function it can call. Avoids the previous race where this handler ran
+// before server.close() finished draining (issue #8).
+const closeRedis = async () => {
+  if (redisClient.isOpen) {
+    logger.info('Closing Redis connection');
+    await redisClient.quit();
+  }
+};
 
 module.exports = {
   redisClient,
-  connectRedis
+  connectRedis,
+  closeRedis
 };

@@ -9,16 +9,18 @@ const {
 } = require('../controllers/auth.controller');
 const { authenticate } = require('../middleware/auth');
 const { authLimiter } = require('../middleware/rateLimiter');
+const { buildDiscordAuthUrl } = require('../utils/oauth');
 
 const router = express.Router();
 
 // Initiate Discord OAuth (JSON response with URL)
 router.post('/discord', authLimiter, initiateOAuth);
 
-// Server-side redirect to Discord OAuth (prevents app interception on iOS)
+// Server-side redirect to Discord OAuth (prevents app interception on iOS).
+// URL builder lives in utils/oauth.js — was previously duplicated here + in the
+// JSON-response controller (issue #16).
 router.get('/login', authLimiter, (req, res) => {
-  const authUrl = `https://discord.com/api/oauth2/authorize?client_id=${process.env.DISCORD_CLIENT_ID}&redirect_uri=${encodeURIComponent(process.env.DISCORD_CALLBACK_URL)}&response_type=code&scope=identify%20guilds`;
-  res.redirect(authUrl);
+  res.redirect(buildDiscordAuthUrl());
 });
 
 // OAuth callback

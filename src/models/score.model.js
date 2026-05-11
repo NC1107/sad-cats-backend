@@ -331,9 +331,32 @@ const getGameState = async (discordId) => {
  * @param {Object} gameState - Game state JSON
  * @returns {Promise<Object>} Updated row
  */
-const saveGameState = async (discordId, gameState, score) => {
+// Sentinel error type so the controller can distinguish "your client is stale" from
+// "the user row vanished" without sniffing strings.
+class StaleAdminVersionError extends Error {
+  constructor() { super('admin version stale'); this.name = 'StaleAdminVersionError'; }
+}
+
+/**
+ * Save game state for a user.
+ *
+ * @param {string} discordId
+ * @param {object} gameState
+ * @param {number|null} [score]  When provided, the score column is overwritten too
+ *                               (prestige/ascension flow). Clamped to [0, SCORE_CAP].
+ * @param {number} [clientAdminVersion=0]  The `_adminVersion` the client echoes back.
+ *   The UPDATE only commits if the row's current `_adminVersion` is <= this value,
+ *   so an admin score override that lands between the controller's read and write
+ *   is no longer silently overwritten. Rowcount 0 → StaleAdminVersionError.
+ */
+const saveGameState = async (discordId, gameState, score, clientAdminVersion = 0) => {
   try {
     const hasScore = score !== undefined && score !== null
+    // The version guard is folded into the WHERE clause: an admin bump between the
+    // controller's pre-read and this UPDATE will leave rowcount = 0 and we surface
+    // it as a 409 to the client. Previously the controller's separate SELECT-then-UPDATE
+    // had a TOCTOU window (issue #4 in the audit / backend issue #4).
+    const versionGuard = `AND COALESCE((game_state->>'_adminVersion')::int, 0) <= $${hasScore ? 4 : 3}`
     const query = hasScore
       ? `UPDATE scores
          SET game_state = $1,
@@ -344,22 +367,31 @@ const saveGameState = async (discordId, gameState, score) => {
              speedrun_run_start = CASE WHEN $3::NUMERIC = 0 THEN NOW() ELSE speedrun_run_start END,
              updated_at = NOW()
          WHERE discord_id = $2
+           ${versionGuard}
          RETURNING score, game_state;`
       : `UPDATE scores
          SET game_state = $1, updated_at = NOW()
          WHERE discord_id = $2
+           ${versionGuard}
          RETURNING score, game_state;`;
     const values = hasScore
-      ? [JSON.stringify(gameState), discordId, score]
-      : [JSON.stringify(gameState), discordId]
+      ? [JSON.stringify(gameState), discordId, score, clientAdminVersion]
+      : [JSON.stringify(gameState), discordId, clientAdminVersion]
     const result = await pool.query(query, values);
     if (result.rows.length === 0) {
-      throw new NotFoundError('User score record not found');
+      // Distinguish "row missing" from "admin bumped us" — the controller maps the
+      // latter to 409 + refreshRequired so the client reloads its server state.
+      const exists = await pool.query('SELECT 1 FROM scores WHERE discord_id = $1', [discordId]);
+      if (exists.rows.length === 0) {
+        throw new NotFoundError('User score record not found');
+      }
+      throw new StaleAdminVersionError();
     }
     logger.info('Game state saved', { discordId, scoreReset: hasScore });
     return result.rows[0];
   } catch (error) {
     if (error instanceof NotFoundError) throw error;
+    if (error instanceof StaleAdminVersionError) throw error;
     logger.error('Error saving game state', { error: error.message, discordId });
     throw new InternalError('Failed to save game state');
   }
@@ -486,6 +518,7 @@ const getGamblingLeaderboard = async (limit = 50, offset = 0) => {
 
 module.exports = {
   SCORE_CAP,
+  StaleAdminVersionError,
   addToScore,
   getTopScores,
   getTopScoresByPeriod,

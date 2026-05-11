@@ -2,6 +2,7 @@ const { v4: uuidv4 } = require('uuid');
 const { generateToken } = require('../services/jwt.service');
 const { verifyGuildMembership } = require('../services/discord.service');
 const { blacklistToken } = require('../services/jwt.service');
+const { buildDiscordAuthUrl } = require('../utils/oauth');
 const logger = require('../utils/logger');
 const { AuthenticationError } = require('../utils/errors');
 
@@ -9,9 +10,7 @@ const { AuthenticationError } = require('../utils/errors');
  * Initiate Discord OAuth flow
  */
 const initiateOAuth = (req, res) => {
-  const authUrl = `https://discord.com/api/oauth2/authorize?client_id=${process.env.DISCORD_CLIENT_ID}&redirect_uri=${encodeURIComponent(process.env.DISCORD_CALLBACK_URL)}&response_type=code&scope=identify%20guilds`;
-
-  res.json({ authUrl });
+  res.json({ authUrl: buildDiscordAuthUrl() });
 };
 
 /**
