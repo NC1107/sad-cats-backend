@@ -290,7 +290,7 @@ const restoreSnapshot = async (req, res, next) => {
     snap.game_state._adminVersion = newVersion;
 
     await pool.query(
-      'UPDATE scores SET score = $1::BIGINT, game_state = $2::jsonb, updated_at = NOW() WHERE discord_id = $3',
+      'UPDATE scores SET score = $1::NUMERIC, game_state = $2::jsonb, updated_at = NOW() WHERE discord_id = $3',
       [snap.score, JSON.stringify(snap.game_state), discordId]
     );
 
@@ -323,7 +323,7 @@ const updateUserGameState = async (req, res, next) => {
     let result;
     if (score !== undefined) {
       result = await pool.query(
-        'UPDATE scores SET game_state = $1::jsonb, score = $2::BIGINT, updated_at = NOW() WHERE discord_id = $3 RETURNING discord_id, username, score, game_state',
+        'UPDATE scores SET game_state = $1::jsonb, score = $2::NUMERIC, updated_at = NOW() WHERE discord_id = $3 RETURNING discord_id, username, score, game_state',
         [JSON.stringify(gameState), score, discordId]
       );
     } else {
@@ -415,7 +415,7 @@ const setBossHP = async (req, res, next) => {
     }
 
     const result = await pool.query(
-      'UPDATE cat_bosses SET current_hp = $1::BIGINT WHERE id = $2 RETURNING *',
+      'UPDATE cat_bosses SET current_hp = $1::NUMERIC WHERE id = $2 RETURNING *',
       [hp, bossId]
     );
     if (result.rows.length === 0) {
@@ -527,7 +527,7 @@ const spawnBoss = async (req, res, next) => {
 
     const result = await pool.query(
       `INSERT INTO cat_bosses (week_key, boss_name, boss_emoji, max_hp, current_hp, reward_pool, boss_level, buff_duration_minutes, spawn_date)
-       VALUES ($1, $2, $3, $4::BIGINT, $4::BIGINT, 0, $5, $6, $7)
+       VALUES ($1, $2, $3, $4::NUMERIC, $4::NUMERIC, 0, $5, $6, $7)
        ON CONFLICT (spawn_date, boss_name) DO NOTHING
        RETURNING *`,
       [null, chosen.name, chosen.emoji, hp, selectedLevel, lvl.buffMinutes, dateKey]
@@ -851,7 +851,7 @@ const loadDevPreset = async (req, res, next) => {
     const newState = { ...p.gameState, _adminVersion: currentVersion + 1 };
 
     await pool.query(
-      `UPDATE scores SET score = $1::BIGINT, game_state = $2, updated_at = NOW() WHERE discord_id = $3`,
+      `UPDATE scores SET score = $1::NUMERIC, game_state = $2, updated_at = NOW() WHERE discord_id = $3`,
       [p.score, JSON.stringify(newState), discordId]
     );
 

@@ -35,9 +35,9 @@ const getCard = async (cardId) => {
 /**
  * Get cards by rarity
  */
-const getCardsByRarity = async (rarity) => {
+const getCardsByRarity = async (rarity, executor = pool) => {
   try {
-    const result = await pool.query(
+    const result = await executor.query(
       'SELECT * FROM cat_cards WHERE rarity = $1 ORDER BY cat_name',
       [rarity]
     );
@@ -97,9 +97,9 @@ const getPlayerCards = async (discordId) => {
 /**
  * Get unique card IDs a player owns (for duplicate detection)
  */
-const getPlayerCardIds = async (discordId) => {
+const getPlayerCardIds = async (discordId, executor = pool) => {
   try {
-    const result = await pool.query(
+    const result = await executor.query(
       'SELECT DISTINCT card_id FROM player_cards WHERE discord_id = $1',
       [discordId]
     );
@@ -113,9 +113,9 @@ const getPlayerCardIds = async (discordId) => {
 /**
  * Insert a new player card
  */
-const insertPlayerCard = async (discordId, cardId, source = 'case', isDuplicate = false) => {
+const insertPlayerCard = async (discordId, cardId, source = 'case', isDuplicate = false, executor = pool) => {
   try {
-    const result = await pool.query(
+    const result = await executor.query(
       `INSERT INTO player_cards (discord_id, card_id, source, is_duplicate)
        VALUES ($1, $2, $3, $4)
        RETURNING *`,
@@ -164,9 +164,9 @@ const getPlayerSetProgress = async (discordId) => {
 const insertCaseOpen = async ({
   discordId, caseType, toysConsumed, cardId,
   rarity, wasPity, wasDuplicate, catnipReceived,
-}) => {
+}, executor = pool) => {
   try {
-    const result = await pool.query(
+    const result = await executor.query(
       `INSERT INTO case_opens (discord_id, case_type, toys_consumed, card_id, rarity, was_pity, was_duplicate, catnip_received)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        RETURNING *`,
@@ -204,10 +204,10 @@ const getCaseHistory = async (discordId, limit = 50) => {
  * Count opens since last rarity threshold (for pity system)
  * Returns { opensSinceEpic, opensSinceLegendary }
  */
-const getPityCounters = async (discordId) => {
+const getPityCounters = async (discordId, executor = pool) => {
   try {
     // Count opens since last epic+
-    const epicResult = await pool.query(
+    const epicResult = await executor.query(
       `SELECT COUNT(*)::int as count FROM case_opens
        WHERE discord_id = $1
          AND opened_at > COALESCE(
@@ -219,7 +219,7 @@ const getPityCounters = async (discordId) => {
     );
 
     // Count opens since last legendary+
-    const legendaryResult = await pool.query(
+    const legendaryResult = await executor.query(
       `SELECT COUNT(*)::int as count FROM case_opens
        WHERE discord_id = $1
          AND opened_at > COALESCE(
@@ -245,9 +245,9 @@ const getPityCounters = async (discordId) => {
 /**
  * Add catnip to a player's balance
  */
-const addCatnip = async (discordId, amount) => {
+const addCatnip = async (discordId, amount, executor = pool) => {
   try {
-    const result = await pool.query(
+    const result = await executor.query(
       'UPDATE scores SET catnip = COALESCE(catnip, 0) + $1 WHERE discord_id = $2 RETURNING catnip',
       [amount, discordId]
     );
@@ -261,9 +261,9 @@ const addCatnip = async (discordId, amount) => {
 /**
  * Spend catnip (returns false if insufficient)
  */
-const spendCatnip = async (discordId, amount) => {
+const spendCatnip = async (discordId, amount, executor = pool) => {
   try {
-    const result = await pool.query(
+    const result = await executor.query(
       `UPDATE scores SET catnip = catnip - $1
        WHERE discord_id = $2 AND COALESCE(catnip, 0) >= $1
        RETURNING catnip`,
@@ -280,9 +280,9 @@ const spendCatnip = async (discordId, amount) => {
 /**
  * Get player's catnip balance
  */
-const getCatnip = async (discordId) => {
+const getCatnip = async (discordId, executor = pool) => {
   try {
-    const result = await pool.query(
+    const result = await executor.query(
       'SELECT COALESCE(catnip, 0) as catnip FROM scores WHERE discord_id = $1',
       [discordId]
     );
@@ -295,9 +295,9 @@ const getCatnip = async (discordId) => {
 
 // ========== Player Cases (inventory) ==========
 
-const insertCase = async (discordId, caseTier, source = 'combine') => {
+const insertCase = async (discordId, caseTier, source = 'combine', executor = pool) => {
   try {
-    const result = await pool.query(
+    const result = await executor.query(
       `INSERT INTO player_cases (discord_id, case_tier, source)
        VALUES ($1, $2, $3) RETURNING *`,
       [discordId, caseTier, source]
@@ -322,9 +322,9 @@ const getPlayerCases = async (discordId) => {
   }
 };
 
-const deleteCase = async (caseId, discordId) => {
+const deleteCase = async (caseId, discordId, executor = pool) => {
   try {
-    const result = await pool.query(
+    const result = await executor.query(
       'DELETE FROM player_cases WHERE id = $1 AND discord_id = $2 RETURNING *',
       [caseId, discordId]
     );

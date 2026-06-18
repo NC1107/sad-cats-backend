@@ -326,7 +326,7 @@ const getDailyBosses = async () => {
       for (const spec of arrivedSpecs) {
         const result = await pool.query(
           `INSERT INTO cat_bosses (week_key, boss_name, boss_emoji, max_hp, current_hp, reward_pool, boss_level, buff_duration_minutes, spawn_date)
-           VALUES ($1, $2, $3, $4::BIGINT, $4::BIGINT, 0, $5, $6, $7)
+           VALUES ($1, $2, $3, $4::NUMERIC, $4::NUMERIC, 0, $5, $6, $7)
            ON CONFLICT (spawn_date, boss_name) DO NOTHING
            RETURNING *`,
           [null, spec.boss_name, spec.boss_emoji, spec.max_hp, spec.boss_level, spec.buff_duration_minutes, dateKey]
@@ -374,10 +374,10 @@ const applyDamage = async (bossId, discordId, username, damage) => {
     // Upsert contribution
     await pool.query(
       `INSERT INTO boss_contributions (boss_id, discord_id, username, damage_dealt, updated_at)
-       VALUES ($1, $2, $3, $4::BIGINT, NOW())
+       VALUES ($1, $2, $3, $4::NUMERIC, NOW())
        ON CONFLICT (boss_id, discord_id)
        DO UPDATE SET
-         damage_dealt = boss_contributions.damage_dealt + $4::BIGINT,
+         damage_dealt = boss_contributions.damage_dealt + $4::NUMERIC,
          username = $3,
          updated_at = NOW()`,
       [bossId, discordId, username, damage]
@@ -386,9 +386,9 @@ const applyDamage = async (bossId, discordId, username, damage) => {
     // Atomically reduce HP and detect defeat
     const result = await pool.query(
       `UPDATE cat_bosses
-       SET current_hp = GREATEST(0, current_hp - $1::BIGINT),
-           defeated = CASE WHEN GREATEST(0, current_hp - $1::BIGINT) = 0 THEN TRUE ELSE defeated END,
-           defeated_at = CASE WHEN GREATEST(0, current_hp - $1::BIGINT) = 0 AND NOT defeated THEN NOW() ELSE defeated_at END
+       SET current_hp = GREATEST(0, current_hp - $1::NUMERIC),
+           defeated = CASE WHEN GREATEST(0, current_hp - $1::NUMERIC) = 0 THEN TRUE ELSE defeated END,
+           defeated_at = CASE WHEN GREATEST(0, current_hp - $1::NUMERIC) = 0 AND NOT defeated THEN NOW() ELSE defeated_at END
        WHERE id = $2 AND NOT defeated
        RETURNING *`,
       [damage, bossId]
@@ -761,7 +761,7 @@ const checkSurgeSpawn = async (onlineCount) => {
 
     const result = await pool.query(
       `INSERT INTO cat_bosses (week_key, boss_name, boss_emoji, max_hp, current_hp, reward_pool, boss_level, buff_duration_minutes, spawn_date, source)
-       VALUES ($1, $2, $3, $4::BIGINT, $4::BIGINT, 0, $5, $6, $7, 'surge')
+       VALUES ($1, $2, $3, $4::NUMERIC, $4::NUMERIC, 0, $5, $6, $7, 'surge')
        ON CONFLICT (spawn_date, boss_name) DO NOTHING
        RETURNING *`,
       [null, picked.name, picked.emoji, hp, lvl.level, lvl.buffMinutes, dateKey]

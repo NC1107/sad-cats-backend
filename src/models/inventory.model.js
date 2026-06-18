@@ -6,7 +6,7 @@ const { InternalError } = require('../utils/errors');
  * Bulk insert toys into inventory_toys table.
  * Each toy: { discord_id, toy_type, tier, quality, quality_name, boss_name, boss_level, source_boss_id }
  */
-const insertToys = async (toys) => {
+const insertToys = async (toys, executor = pool) => {
   if (!toys || toys.length === 0) return [];
   try {
     const values = [];
@@ -25,7 +25,7 @@ const insertToys = async (toys) => {
       RETURNING *
     `;
 
-    const result = await pool.query(query, params);
+    const result = await executor.query(query, params);
     return result.rows;
   } catch (error) {
     logger.error('Error inserting toys', { error: error.message, count: toys.length });
@@ -76,9 +76,9 @@ const getToyCounts = async (discordId) => {
 /**
  * Get total toy count for a user (for cap check)
  */
-const getToyCount = async (discordId) => {
+const getToyCount = async (discordId, executor = pool) => {
   try {
-    const result = await pool.query(
+    const result = await executor.query(
       'SELECT COUNT(*)::int as count FROM inventory_toys WHERE discord_id = $1',
       [discordId]
     );

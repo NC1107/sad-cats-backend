@@ -189,7 +189,7 @@ const voteBossSpawn = async (req, res, next) => {
 
       const result = await pool.query(
         `INSERT INTO cat_bosses (week_key, boss_name, boss_emoji, max_hp, current_hp, reward_pool, boss_level, buff_duration_minutes, spawn_date, source)
-         VALUES ($1, $2, $3, $4::BIGINT, $4::BIGINT, 0, $5, $6, $7, 'vote')
+         VALUES ($1, $2, $3, $4::NUMERIC, $4::NUMERIC, 0, $5, $6, $7, 'vote')
          ON CONFLICT (spawn_date, boss_name) DO NOTHING RETURNING *`,
         [null, picked.name, picked.emoji, hp, lvl.level, lvl.buffMinutes, dateKey]
       );

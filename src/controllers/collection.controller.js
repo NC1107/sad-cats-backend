@@ -1,6 +1,7 @@
 const cardModel = require('../models/card.model');
 const inventoryModel = require('../models/inventory.model');
 const pool = require('../config/database');
+const { withTransaction } = require('../config/database');
 const { redisClient } = require('../config/redis');
 const logger = require('../utils/logger');
 const { ValidationError, NotFoundError, ConflictError } = require('../utils/errors');
@@ -111,33 +112,42 @@ const combineToys = async (req, res, next) => {
     }
 
     const placeholders = toyIds.map((_, i) => `$${i + 2}`).join(', ');
-    const verifyResult = await pool.query(
-      `SELECT id, quality, toy_type FROM inventory_toys WHERE discord_id = $1 AND id IN (${placeholders})`,
-      [discordId, ...toyIds]
-    );
 
-    if (verifyResult.rows.length !== 5) {
-      throw new ValidationError(`Only found ${verifyResult.rows.length} of 5 toys in your inventory`);
-    }
+    // Whole flow is one transaction so two concurrent requests can't both consume
+    // the same toys. The DELETE ... RETURNING is the authoritative concurrency
+    // guard: the row locks taken by the FOR UPDATE select serialize the second
+    // request behind the first, and requiring exactly 5 deleted rows inside the
+    // transaction means a partial/duplicate set rolls back instead of minting a case.
+    const { caseTier, avgQuality, typeBonus, playerCase } = await withTransaction(async (client) => {
+      const verifyResult = await client.query(
+        `SELECT id, quality, toy_type FROM inventory_toys WHERE discord_id = $1 AND id IN (${placeholders}) FOR UPDATE`,
+        [discordId, ...toyIds]
+      );
 
-    // Check type bonus — all 5 same toy_type
-    const types = new Set(verifyResult.rows.map(t => t.toy_type));
-    const typeBonus = types.size === 1;
+      if (verifyResult.rows.length !== 5) {
+        throw new ValidationError(`Only found ${verifyResult.rows.length} of 5 toys in your inventory`);
+      }
 
-    let avgQuality = verifyResult.rows.reduce((sum, t) => sum + Number(t.quality), 0) / 5;
-    if (typeBonus) {
-      avgQuality = Math.min(1.0, avgQuality + TYPE_BONUS);
-    }
-    const caseTier = getCaseTier(avgQuality);
+      const typesSet = new Set(verifyResult.rows.map(t => t.toy_type));
+      const bonus = typesSet.size === 1;
 
-    // Delete the 5 toys
-    await pool.query(
-      `DELETE FROM inventory_toys WHERE discord_id = $1 AND id IN (${placeholders})`,
-      [discordId, ...toyIds]
-    );
+      let avg = verifyResult.rows.reduce((sum, t) => sum + Number(t.quality), 0) / 5;
+      if (bonus) {
+        avg = Math.min(1.0, avg + TYPE_BONUS);
+      }
+      const tier = getCaseTier(avg);
 
-    // Insert case into inventory
-    const playerCase = await cardModel.insertCase(discordId, caseTier, 'combine');
+      const del = await client.query(
+        `DELETE FROM inventory_toys WHERE discord_id = $1 AND id IN (${placeholders}) RETURNING id`,
+        [discordId, ...toyIds]
+      );
+      if (del.rowCount !== 5) {
+        throw new ValidationError('Toys changed during combine — please try again');
+      }
+
+      const newCase = await cardModel.insertCase(discordId, tier, 'combine', client);
+      return { caseTier: tier, avgQuality: avg, typeBonus: bonus, playerCase: newCase };
+    });
 
     res.json({
       success: true,
@@ -168,48 +178,54 @@ const openCase = async (req, res, next) => {
       throw new ValidationError('Must provide caseId');
     }
 
-    // Delete case (verifies ownership)
-    const playerCase = await cardModel.deleteCase(caseId, discordId);
-    if (!playerCase) {
-      throw new NotFoundError('Case not found in your inventory');
-    }
+    // Entire open is one transaction: the case is only consumed if a card is
+    // actually granted. If anything throws (empty rarity pool, insert failure)
+    // the ROLLBACK restores the case automatically — no fragile manual refund.
+    const { caseTier, card, isDuplicate, catnipEarned, wasPity } = await withTransaction(async (client) => {
+      // Delete case (verifies ownership + locks the flow against double-open)
+      const playerCase = await cardModel.deleteCase(caseId, discordId, client);
+      if (!playerCase) {
+        throw new NotFoundError('Case not found in your inventory');
+      }
 
-    const caseTier = playerCase.case_tier;
+      const tier = playerCase.case_tier;
 
-    // Roll for a card
-    const pity = await cardModel.getPityCounters(discordId);
-    const wasPity = pity.opensSinceEpic >= PITY_EPIC;
-    const rarity = rollRarity(caseTier, pity);
+      // Roll for a card
+      const pity = await cardModel.getPityCounters(discordId, client);
+      const pityHit = pity.opensSinceEpic >= PITY_EPIC;
+      const rarity = rollRarity(tier, pity);
 
-    const cardsOfRarity = await cardModel.getCardsByRarity(rarity);
-    if (cardsOfRarity.length === 0) {
-      // Refund the case
-      await cardModel.insertCase(discordId, caseTier, playerCase.source);
-      throw new NotFoundError(`No cards found for rarity: ${rarity}`);
-    }
-    const card = cardsOfRarity[Math.floor(Math.random() * cardsOfRarity.length)];
+      const cardsOfRarity = await cardModel.getCardsByRarity(rarity, client);
+      if (cardsOfRarity.length === 0) {
+        // Rollback restores the case; surface as a 404.
+        throw new NotFoundError(`No cards found for rarity: ${rarity}`);
+      }
+      const rolledCard = cardsOfRarity[Math.floor(Math.random() * cardsOfRarity.length)];
 
-    // Check for duplicate
-    const ownedIds = await cardModel.getPlayerCardIds(discordId);
-    const isDuplicate = ownedIds.has(card.id);
-    let catnipEarned = 0;
+      // Check for duplicate
+      const ownedIds = await cardModel.getPlayerCardIds(discordId, client);
+      const dup = ownedIds.has(rolledCard.id);
+      let earned = 0;
 
-    if (isDuplicate) {
-      catnipEarned = DUPLICATE_CATNIP[rarity] || 5;
-      await cardModel.addCatnip(discordId, catnipEarned);
-    }
+      if (dup) {
+        earned = DUPLICATE_CATNIP[rarity] || 5;
+        await cardModel.addCatnip(discordId, earned, client);
+      }
 
-    await cardModel.insertPlayerCard(discordId, card.id, 'case', isDuplicate);
+      await cardModel.insertPlayerCard(discordId, rolledCard.id, 'case', dup, client);
 
-    await cardModel.insertCaseOpen({
-      discordId,
-      caseType: caseTier,
-      toysConsumed: [],
-      cardId: card.id,
-      rarity,
-      wasPity,
-      wasDuplicate: isDuplicate,
-      catnipReceived: catnipEarned,
+      await cardModel.insertCaseOpen({
+        discordId,
+        caseType: tier,
+        toysConsumed: [],
+        cardId: rolledCard.id,
+        rarity,
+        wasPity: pityHit,
+        wasDuplicate: dup,
+        catnipReceived: earned,
+      }, client);
+
+      return { caseTier: tier, card: rolledCard, isDuplicate: dup, catnipEarned: earned, wasPity: pityHit };
     });
 
     res.json({
@@ -282,33 +298,33 @@ const sellToys = async (req, res, next) => {
     }
 
     const placeholders = toyIds.map((_, i) => `$${i + 2}`).join(', ');
-    const verifyResult = await pool.query(
-      `SELECT id, quality FROM inventory_toys WHERE discord_id = $1 AND id IN (${placeholders})`,
-      [discordId, ...toyIds]
-    );
 
-    if (verifyResult.rows.length === 0) {
-      throw new ValidationError('None of these toys are in your inventory');
-    }
+    // Transaction: the DELETE ... RETURNING is the authoritative set of toys
+    // actually sold, so the catnip payout is computed from rows that were truly
+    // removed in this transaction — concurrent sells of the same toy can't both pay.
+    const { toysSold, totalCatnip, newBalance } = await withTransaction(async (client) => {
+      const del = await client.query(
+        `DELETE FROM inventory_toys WHERE discord_id = $1 AND id IN (${placeholders}) RETURNING quality`,
+        [discordId, ...toyIds]
+      );
 
-    let totalCatnip = 0;
-    for (const toy of verifyResult.rows) {
-      const qualityBonus = Math.floor(Number(toy.quality) * TOY_SELL_QUALITY_BONUS);
-      totalCatnip += TOY_SELL_BASE + qualityBonus;
-    }
+      if (del.rows.length === 0) {
+        throw new ValidationError('None of these toys are in your inventory');
+      }
 
-    const foundIds = verifyResult.rows.map(r => r.id);
-    const delPlaceholders = foundIds.map((_, i) => `$${i + 2}`).join(', ');
-    await pool.query(
-      `DELETE FROM inventory_toys WHERE discord_id = $1 AND id IN (${delPlaceholders})`,
-      [discordId, ...foundIds]
-    );
+      let total = 0;
+      for (const toy of del.rows) {
+        const qualityBonus = Math.floor(Number(toy.quality) * TOY_SELL_QUALITY_BONUS);
+        total += TOY_SELL_BASE + qualityBonus;
+      }
 
-    const newBalance = await cardModel.addCatnip(discordId, totalCatnip);
+      const balance = await cardModel.addCatnip(discordId, total, client);
+      return { toysSold: del.rows.length, totalCatnip: total, newBalance: balance };
+    });
 
     res.json({
       success: true,
-      toysSold: verifyResult.rows.length,
+      toysSold,
       catnipEarned: totalCatnip,
       catnipBalance: newBalance,
     });
@@ -329,34 +345,44 @@ const sellCard = async (req, res, next) => {
       throw new ValidationError('Must provide playerCardId');
     }
 
-    const result = await pool.query(
-      `SELECT pc.id, pc.card_id, pc.is_duplicate, cc.rarity
-       FROM player_cards pc
-       JOIN cat_cards cc ON cc.id = pc.card_id
-       WHERE pc.id = $1 AND pc.discord_id = $2`,
-      [playerCardId, discordId]
-    );
+    // Transaction with row locks: FOR UPDATE on every copy of this card serializes
+    // concurrent sells, so two requests can't both see count > 1 and delete down to
+    // zero copies (the "keep your only copy" guard would otherwise race).
+    const { catnipValue, newBalance } = await withTransaction(async (client) => {
+      const result = await client.query(
+        `SELECT pc.card_id, cc.rarity
+         FROM player_cards pc
+         JOIN cat_cards cc ON cc.id = pc.card_id
+         WHERE pc.id = $1 AND pc.discord_id = $2`,
+        [playerCardId, discordId]
+      );
 
-    if (result.rows.length === 0) {
-      throw new NotFoundError('Card not found in your collection');
-    }
+      if (result.rows.length === 0) {
+        throw new NotFoundError('Card not found in your collection');
+      }
 
-    const card = result.rows[0];
+      const card = result.rows[0];
 
-    const countResult = await pool.query(
-      'SELECT COUNT(*)::int as count FROM player_cards WHERE discord_id = $1 AND card_id = $2',
-      [discordId, card.card_id]
-    );
+      // Lock all copies of this card for this user before counting/deleting.
+      const copies = await client.query(
+        'SELECT id FROM player_cards WHERE discord_id = $1 AND card_id = $2 FOR UPDATE',
+        [discordId, card.card_id]
+      );
 
-    if (countResult.rows[0].count <= 1) {
-      throw new ConflictError('Cannot sell your only copy of this card');
-    }
+      if (copies.rows.length <= 1) {
+        throw new ConflictError('Cannot sell your only copy of this card');
+      }
 
-    const catnipValue = DUPLICATE_CATNIP[card.rarity] || 5;
+      const value = DUPLICATE_CATNIP[card.rarity] || 5;
 
-    await pool.query('DELETE FROM player_cards WHERE id = $1', [playerCardId]);
+      const del = await client.query('DELETE FROM player_cards WHERE id = $1 AND discord_id = $2', [playerCardId, discordId]);
+      if (del.rowCount !== 1) {
+        throw new ConflictError('Card changed during sale — please try again');
+      }
 
-    const newBalance = await cardModel.addCatnip(discordId, catnipValue);
+      const balance = await cardModel.addCatnip(discordId, value, client);
+      return { catnipValue: value, newBalance: balance };
+    });
 
     res.json({
       success: true,
@@ -396,20 +422,20 @@ const shopBuyCase = async (req, res, next) => {
       throw new ValidationError('Invalid shop item');
     }
 
-    const remaining = await cardModel.spendCatnip(discordId, item.price);
-    if (remaining === null) {
-      const balance = await cardModel.getCatnip(discordId);
-      throw new ValidationError(`Not enough catnip. Need ${item.price}, have ${balance}`);
-    }
+    // Atomic spend + grant: if the case insert fails, the catnip spend rolls back.
+    const { playerCase, finalBalance } = await withTransaction(async (client) => {
+      const remaining = await cardModel.spendCatnip(discordId, item.price, client);
+      if (remaining === null) {
+        const balance = await cardModel.getCatnip(discordId, client);
+        throw new ValidationError(`Not enough catnip. Need ${item.price}, have ${balance}`);
+      }
+      const newCase = await cardModel.insertCase(discordId, item.tier, 'shop', client);
+      return { playerCase: newCase, finalBalance: remaining };
+    });
 
-    // Insert case into inventory
-    const playerCase = await cardModel.insertCase(discordId, item.tier, 'shop');
-
-    // Track purchase in Redis
+    // Track purchase in Redis only after the spend committed.
     await redisClient.sAdd(shopKey, String(itemIndex));
     await redisClient.expire(shopKey, 86400);
-
-    const finalBalance = await cardModel.getCatnip(discordId);
 
     res.json({
       success: true,
@@ -653,21 +679,39 @@ const summonBoss = async (req, res, next) => {
     const hpRange = BossModel.getScaledHpRange(selectedLevel, chosen.name);
     const hp = String(Math.floor(Math.random() * (hpRange.maxHP - hpRange.minHP + 1)) + hpRange.minHP);
 
-    const result = await pool.query(
-      `INSERT INTO cat_bosses (week_key, boss_name, boss_emoji, max_hp, current_hp, reward_pool, boss_level, buff_duration_minutes, spawn_date)
-       VALUES ($1, $2, $3, $4::BIGINT, $4::BIGINT, 0, $5, $6, $7)
-       ON CONFLICT (spawn_date, boss_name) DO NOTHING
-       RETURNING *`,
-      [null, chosen.name, chosen.emoji, hp, selectedLevel, lvl.buffMinutes, dateKey]
-    );
-
-    if (result.rows.length === 0) {
-      await redisClient.del(lockKey);
-      return res.status(409).json({ success: false, error: `${chosen.name} already spawned today` });
+    // Atomic: create the boss and deduct catnip together. spendCatnip's conditional
+    // UPDATE is the real balance guard (the getCatnip check above is just a fast-fail);
+    // if it can't pay at commit time the boss insert rolls back so nobody gets a free boss.
+    let bossRow;
+    try {
+      bossRow = await withTransaction(async (client) => {
+        const ins = await client.query(
+          `INSERT INTO cat_bosses (week_key, boss_name, boss_emoji, max_hp, current_hp, reward_pool, boss_level, buff_duration_minutes, spawn_date)
+           VALUES ($1, $2, $3, $4::NUMERIC, $4::NUMERIC, 0, $5, $6, $7)
+           ON CONFLICT (spawn_date, boss_name) DO NOTHING
+           RETURNING *`,
+          [null, chosen.name, chosen.emoji, hp, selectedLevel, lvl.buffMinutes, dateKey]
+        );
+        if (ins.rows.length === 0) {
+          const err = new Error(`${chosen.name} already spawned today`);
+          err.statusCode = 409;
+          throw err;
+        }
+        const remaining = await cardModel.spendCatnip(discordId, BOSS_SUMMON_COST, client);
+        if (remaining === null) {
+          const err = new Error(`Need ${BOSS_SUMMON_COST} catnip`);
+          err.statusCode = 400;
+          throw err;
+        }
+        return ins.rows[0];
+      });
+    } catch (err) {
+      await redisClient.del(lockKey); // release the server-wide daily lock on any failure
+      if (err.statusCode === 409 || err.statusCode === 400) {
+        return res.status(err.statusCode).json({ success: false, error: err.message });
+      }
+      throw err;
     }
-
-    // Deduct catnip
-    await cardModel.addCatnip(discordId, -BOSS_SUMMON_COST);
 
     logger.info('Player summoned boss', { discordId, boss: chosen.name, level: selectedLevel, hp });
 
@@ -682,7 +726,7 @@ const summonBoss = async (req, res, next) => {
     if (io) io.to('leaderboard').emit('activity', entry);
     pushActivity(entry);
 
-    res.json({ success: true, boss: result.rows[0], catnipSpent: BOSS_SUMMON_COST });
+    res.json({ success: true, boss: bossRow, catnipSpent: BOSS_SUMMON_COST });
   } catch (error) {
     next(error);
   }
@@ -803,23 +847,6 @@ const shopBuyToy = async (req, res, next) => {
       return res.status(400).json({ error: 'Already purchased today' });
     }
 
-    // Check catnip balance
-    const catnipRow = await cardModel.getCatnip(discordId);
-    const balance = catnipRow || 0;
-    if (balance < item.price) {
-      return res.status(400).json({ error: 'Not enough catnip' });
-    }
-
-    // Check toy limit
-    const toyCount = await inventoryModel.getToyCount(discordId);
-    if (toyCount >= 500) {
-      return res.status(400).json({ error: 'Toy inventory full (500 max)' });
-    }
-
-    // Deduct catnip
-    await cardModel.addCatnip(discordId, -item.price);
-
-    // Insert toy
     const quality = QUALITY_VALUES[item.qualityName];
     const toy = {
       discord_id: discordId,
@@ -831,18 +858,43 @@ const shopBuyToy = async (req, res, next) => {
       boss_level: 0,
       source_boss_id: null,
     };
-    const inserted = await inventoryModel.insertToys([toy]);
 
-    // Track purchase in Redis
+    // Atomic spend + grant. spendCatnip's conditional UPDATE guards against the
+    // balance going negative under concurrent spends; the toy insert and the
+    // deduction commit together (or not at all).
+    let result;
+    try {
+      result = await withTransaction(async (client) => {
+        const toyCount = await inventoryModel.getToyCount(discordId, client);
+        if (toyCount >= 500) {
+          const err = new Error('Toy inventory full (500 max)');
+          err.statusCode = 400;
+          throw err;
+        }
+        const remaining = await cardModel.spendCatnip(discordId, item.price, client);
+        if (remaining === null) {
+          const err = new Error('Not enough catnip');
+          err.statusCode = 400;
+          throw err;
+        }
+        const inserted = await inventoryModel.insertToys([toy], client);
+        return { toy: inserted[0], catnipBalance: remaining };
+      });
+    } catch (err) {
+      if (err.statusCode === 400) {
+        return res.status(400).json({ error: err.message });
+      }
+      throw err;
+    }
+
+    // Track purchase in Redis only after the spend committed.
     await redisClient.sAdd(shopKey, String(itemIndex));
     await redisClient.expire(shopKey, 86400);
 
-    const finalBalance = await cardModel.getCatnip(discordId);
-
     res.json({
       success: true,
-      toy: inserted[0],
-      catnipBalance: finalBalance,
+      toy: result.toy,
+      catnipBalance: result.catnipBalance,
     });
   } catch (error) {
     next(error);

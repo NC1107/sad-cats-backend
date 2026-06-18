@@ -29,5 +29,31 @@ const closePool = async () => {
   await pool.end();
 };
 
+// Run `fn` inside a single transaction on a dedicated pooled connection.
+// `fn` receives the client; whatever it returns is the resolved value.
+// Any throw rolls back; the connection is always released. Use this for
+// multi-step economy flows (catnip spend → item grant) that must be atomic
+// so a mid-flight failure can't debit currency without granting the item
+// (or grant an item without debiting).
+const withTransaction = async (fn) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await fn(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (err) {
+    try {
+      await client.query('ROLLBACK');
+    } catch (rollbackErr) {
+      logger.error('Transaction rollback failed', { error: rollbackErr.message });
+    }
+    throw err;
+  } finally {
+    client.release();
+  }
+};
+
 module.exports = pool;
 module.exports.closePool = closePool;
+module.exports.withTransaction = withTransaction;
