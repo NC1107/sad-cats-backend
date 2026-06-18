@@ -53,16 +53,72 @@ describe('gameStateSchema', () => {
     expect(parsed.body.gameState.musicSettings.volume).toBe(0.3);
   });
 
-  test('strict mode rejects unknown top-level fields (catches future drift)', () => {
-    expect(() => gameStateSchema.parse({
-      body: { gameState: { neverHeardOfIt: 1 } }
-    })).toThrow();
+  // The schema is .strip() (not .strict()): a full-overwrite save must not be
+  // rejected wholesale just because the client sent an unknown field — that would
+  // silently stop every stat from persisting. Unknown fields are dropped, known
+  // fields still validate and survive.
+  test('strip mode drops unknown top-level fields instead of rejecting the save', () => {
+    const parsed = gameStateSchema.parse({
+      body: { gameState: { neverHeardOfIt: 1, totalClicks: 5 } }
+    });
+    expect(parsed.body.gameState.neverHeardOfIt).toBeUndefined();
+    expect(parsed.body.gameState.totalClicks).toBe(5);
   });
 
   test('rejects negative balances', () => {
     expect(() => gameStateSchema.parse({
       body: { gameState: { lifetimeEarnings: -1 } }
     })).toThrow();
+  });
+
+  // Contract test: the exact key set produced by buildSavePayload in
+  // sad-cats-dot-org/src/pages/Game.jsx must validate. If the frontend payload
+  // grows and this drifts, CI fails here instead of stats silently vanishing in prod.
+  test('accepts the full live buildSavePayload shape', () => {
+    const payload = {
+      upgrades: { autoClicker: 3 },
+      prestigeLevel: 2,
+      prestigeMultiplier: 1.5,
+      lifetimeEarnings: 123456,
+      cycleEarnings: 1000,
+      cosmicPrestigeBonus: 0,
+      unlockedAchievements: ['first_click'],
+      skillTree: { purrs_1: true, lastRespec: '2026-01-01' },
+      dailyChallenges: { date: '2026-06-18', clicks: 10, earned: 50, maxCombo: 5, upgradesBought: 1, playSeconds: 120, claimed: [true, false, false] },
+      totalClicks: 500,
+      totalClickTime: 400,
+      totalPlayTime: 3600,
+      lastPullTime: null,
+      cosmicBuff: null,
+      starShards: 12,
+      ascensionLevel: 1,
+      ascensionMultiplier: 2,
+      microQuest: null,
+      totalMicroQuestsCompleted: 4,
+      bossesDefeated: 3,
+      allTimeMaxCombo: 42,
+      totalDailyChallengesClaimed: 9,
+      cosmicPullCount: 2,
+      _adminVersion: 0,
+      settings: { numberFormat: 'standard' },
+      musicSettings: { volume: 0.3 },
+    };
+    expect(() => gameStateSchema.parse({ body: { gameState: payload } })).not.toThrow();
+  });
+
+  // The Settings → "reset progress" flow sends dailyChallenges: null. This must
+  // validate (it used to 400 under .strict() + non-nullable, wiping the save).
+  test('accepts the Settings reset shape (dailyChallenges: null)', () => {
+    const resetState = {
+      upgrades: {}, prestigeLevel: 0, prestigeMultiplier: 1,
+      lifetimeEarnings: 0, cycleEarnings: 0, cosmicPrestigeBonus: 0,
+      unlockedAchievements: [], skillTree: {}, dailyChallenges: null,
+      totalClicks: 0, totalClickTime: 0, lastPullTime: null, cosmicBuff: null,
+      starShards: 0, ascensionLevel: 0, ascensionMultiplier: 1, microQuest: null,
+      totalMicroQuestsCompleted: 0, bossesDefeated: 0, _adminVersion: 0,
+    };
+    const parsed = gameStateSchema.parse({ body: { gameState: resetState } });
+    expect(parsed.body.gameState.dailyChallenges).toBeNull();
   });
 });
 

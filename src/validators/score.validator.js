@@ -32,6 +32,15 @@ const getLeaderboardSchema = z.object({
 // sad-cats-dot-org/src/pages/Game.jsx. When the frontend payload grows, expand this
 // schema in the same PR. Issue #2 (audit) documents the historical drift.
 //
+// IMPORTANT: this object is `.strip()`, NOT `.strict()`. saveFullState does a full
+// overwrite of game_state, so a validation error here means the ENTIRE save is
+// rejected and every stat (totalClicks, totalPlayTime, …) silently stops persisting
+// until the next valid save. `.strict()` made any out-of-sync field from the frontend
+// nuke the whole save; `.strip()` validates known fields and silently drops unknown
+// ones, so drift degrades gracefully. The contract test in tests/score.validator.test.js
+// asserts the live buildSavePayload shape (and the Settings-reset shape) still validate,
+// so genuine drift is caught in CI rather than in production saves.
+//
 // Settings / musicSettings are kept open (z.record(z.any())) because they're a
 // pass-through JSON bag the frontend owns end-to-end.
 const gameStateSchema = z.object({
@@ -51,6 +60,9 @@ const gameStateSchema = z.object({
       skillTree: z.record(z.string(), z.union([z.boolean(), z.string(), z.null(), z.number()])).optional().default({}),
 
       // --- Daily challenges / micro-quests
+      // Nullable: the Settings "reset progress" flow sends dailyChallenges: null.
+      // Without .nullable() that reset 400s and (under the old .strict()) wiped the
+      // whole save. The frontend treats a null/absent value as "fresh" on load.
       dailyChallenges: z.object({
         date: z.string().nullable().optional().default(null),
         clicks: z.number().int().min(0).optional().default(0),
@@ -59,7 +71,7 @@ const gameStateSchema = z.object({
         upgradesBought: z.number().int().min(0).optional().default(0),
         playSeconds: z.number().int().min(0).optional().default(0),
         claimed: z.array(z.boolean()).max(3).optional().default([false, false, false])
-      }).optional().default({ date: null, clicks: 0, earned: 0, maxCombo: 0, upgradesBought: 0, playSeconds: 0, claimed: [false, false, false] }),
+      }).nullable().optional().default({ date: null, clicks: 0, earned: 0, maxCombo: 0, upgradesBought: 0, playSeconds: 0, claimed: [false, false, false] }),
       // Backward compat: accept the legacy singular format from pre-2026 clients.
       dailyChallenge: z.object({
         date: z.string().nullable().optional().default(null),
@@ -93,7 +105,7 @@ const gameStateSchema = z.object({
       // --- Settings (pass-through JSON bags — frontend owns the shape)
       settings: z.record(z.any()).optional().default({}),
       musicSettings: z.record(z.any()).optional().default({})
-    }).strict()
+    }).strip()
   })
 });
 
