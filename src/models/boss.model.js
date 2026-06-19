@@ -243,23 +243,32 @@ const distributeToys = async (bossId, boss) => {
     );
     const validIds = new Set(validCheck.rows.map(r => r.discord_id));
 
-    // Insert per-user so one failure doesn't kill the whole batch
+    // Batch the per-user toy counts in ONE query instead of a SELECT per recipient
+    // (this was an N+1 over every contributor — a popular boss = hundreds of round-trips).
+    const recipientIds = drops.filter(d => validIds.has(d.discordId)).map(d => d.discordId);
+    const counts = await inventoryModel.getToyCountsBatch(recipientIds);
+
     const allToys = [];
     for (const drop of drops) {
       if (!validIds.has(drop.discordId)) continue;
-      const currentCount = await inventoryModel.getToyCount(drop.discordId);
-      const room = toyService.MAX_TOYS_PER_USER - currentCount;
+      const room = toyService.MAX_TOYS_PER_USER - (counts[drop.discordId] || 0);
       if (room <= 0) continue;
-      const toysToInsert = drop.toys.slice(0, room).map(t => ({
+      allToys.push(...drop.toys.slice(0, room).map(t => ({
         ...t,
         discord_id: drop.discordId,
         source_boss_id: bossId,
-      }));
+      })));
+    }
+
+    // Single multi-row insert for the whole distribution (was one INSERT per user).
+    // All rows are pre-validated (FK + room), so a batch insert is safe; on failure
+    // we bail before emitting so we don't announce drops that didn't land.
+    if (allToys.length > 0) {
       try {
-        await inventoryModel.insertToys(toysToInsert);
-        allToys.push(...toysToInsert);
+        await inventoryModel.insertToys(allToys);
       } catch (err) {
-        logger.error('Failed to insert toys for user', { discordId: drop.discordId, error: err.message });
+        logger.error('Failed to insert distributed toys', { bossId, count: allToys.length, error: err.message });
+        return;
       }
     }
 
@@ -318,8 +327,14 @@ const getDailyBosses = async () => {
     const schedule = generateDailySchedule(dateKey);
     const arrivedSpecs = schedule.filter(s => currentHour >= s.spawn_hour);
 
-    // Check if spawning is enabled before creating new bosses
-    const spawningEnabled = await redisClient.get('config:bossSpawningEnabled');
+    // Check if spawning is enabled before creating new bosses. Fail OPEN: a Redis
+    // blip must not 500 the whole GET /api/boss read path — default to enabled.
+    let spawningEnabled = null;
+    try {
+      spawningEnabled = await redisClient.get('config:bossSpawningEnabled');
+    } catch (e) {
+      logger.warn('bossSpawningEnabled flag read failed, assuming enabled', { error: e.message });
+    }
 
     // Try to insert any arrived bosses that don't exist yet
     if (spawningEnabled !== 'false') {

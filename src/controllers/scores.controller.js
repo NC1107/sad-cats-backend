@@ -14,7 +14,6 @@ const {
 const pool = require('../config/database');
 const { applyDamage: applyBossDamage, applyDamageToCurrentBoss, getDefeatedBossCount } = require('../models/boss.model');
 const { getIO, pushActivity } = require('../socket');
-const { invalidate } = require('../services/cache.service');
 const { redisClient } = require('../config/redis');
 const logger = require('../utils/logger');
 const { computeTrustFactor } = require('../services/trust.service');
@@ -150,9 +149,6 @@ const addToScore = async (req, res, next) => {
     }
 
     const updatedScore = await addToScoreModel(scoreData);
-
-    // Invalidate daily leaderboard cache (most volatile period)
-    await invalidate('scores:leaderboard:daily');
 
     logger.info('Score updated', { discordId: scoreData.discordId, delta, source: req.user ? 'web' : 'bot' });
 
@@ -327,11 +323,6 @@ const saveFullState = async (req, res, next) => {
         return res.status(409).json({ error: 'State outdated', refreshRequired: true });
       }
       throw e;
-    }
-
-    // Invalidate leaderboard cache when score is explicitly set (prestige/ascension reset)
-    if (score !== undefined && score !== null) {
-      await invalidate('scores:leaderboard:*');
     }
 
     // Broadcast activity events for prestige/ascension

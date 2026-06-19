@@ -141,6 +141,13 @@ const setupPostgresListener = () => {
       client.on('notification', (msg) => {
         try {
           if (msg.channel === 'score_updated') {
+            // NOTE (tracked debt, audit M6): the score_updated trigger emits
+            // row_to_json(NEW), which includes the full game_state JSONB. Postgres
+            // caps NOTIFY payloads at 8000 bytes — a large game_state would make the
+            // trigger raise inside the score UPDATE txn. Slimming the trigger to just
+            // {discord_id, score, username, avatar_url, updated_at} needs a paired
+            // frontend change first, since game_state is forwarded below for the live
+            // leaderboard. Deferred until then.
             const score = JSON.parse(msg.payload);
 
             logger.info('Score update notification received', {
