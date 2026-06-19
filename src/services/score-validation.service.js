@@ -24,6 +24,26 @@ const SOFT_CAP_HEADROOM = 10;
 const MAX_PRESTIGE_LEVEL = 10_000;
 const MAX_ASCENSION_LEVEL = 1_000;
 
+// Boss-damage clamp. Boss damage is dealt ONLY by active clicks, so the damage a
+// player reports in a sync window cannot massively exceed the SCORE they earned in
+// that same window — both derive from click power. We clamp `clickDamage` to a
+// generous multiple of the request's score delta, with an absolute floor so an
+// early player (tiny delta but legitimate clicks) is never clamped. This kills the
+// "clickDamage: 1e12 → instantly defeat the community boss" exploit without a
+// server-side income-formula mirror or any new persisted field. Tune from soak data.
+const CLICK_DAMAGE_FLOOR = 1_000_000;
+const CLICK_DAMAGE_MULT = 20;
+
+/**
+ * Maximum plausible boss click-damage for a sync carrying score `delta`.
+ * @param {number} delta  the score delta reported in the same request
+ * @returns {number}      ceiling for clickDamage
+ */
+function computeMaxClickDamage(delta) {
+  const d = Math.abs(Number(delta) || 0);
+  return Math.max(CLICK_DAMAGE_FLOOR, d * CLICK_DAMAGE_MULT);
+}
+
 /**
  * Compute the theoretical maximum delta a player could legitimately earn in
  * `elapsedSec` seconds, given their cached game state.
@@ -165,6 +185,30 @@ function validateMonotonicity(prev, next) {
     });
   }
 
+  // --- prestigeMultiplier / ascensionMultiplier: permanent cumulative bonuses that
+  //     only ever grow. A real decrease signals a forged/rolled-back state. Soft,
+  //     because a client recalc can dip by a rounding hair; the 0.1% tolerance avoids
+  //     float false-positives. (These fields ARE persisted, unlike catsPerSecond/
+  //     clickPower — see the computeMaxDelta note.)
+  const prevPMult = num(prev.prestigeMultiplier) || 1;
+  const nextPMult = num(next.prestigeMultiplier) || 1;
+  if (next.prestigeMultiplier !== undefined && nextPMult < prevPMult * 0.999) {
+    violations.push({
+      kind: 'monotonicity_prestigeMultiplier',
+      severity: 'soft',
+      payload: { prev: prevPMult, next: nextPMult },
+    });
+  }
+  const prevAMult = num(prev.ascensionMultiplier) || 1;
+  const nextAMult = num(next.ascensionMultiplier) || 1;
+  if (next.ascensionMultiplier !== undefined && nextAMult < prevAMult * 0.999) {
+    violations.push({
+      kind: 'monotonicity_ascensionMultiplier',
+      severity: 'soft',
+      payload: { prev: prevAMult, next: nextAMult },
+    });
+  }
+
   // --- upgrades[id]: each count non-decreasing
   const prevUpgrades = prev.upgrades || {};
   const nextUpgrades = next.upgrades || {};
@@ -226,7 +270,10 @@ module.exports = {
   SOFT_CAP_HEADROOM,
   MAX_PRESTIGE_LEVEL,
   MAX_ASCENSION_LEVEL,
+  CLICK_DAMAGE_FLOOR,
+  CLICK_DAMAGE_MULT,
   computeMaxDelta,
+  computeMaxClickDamage,
   validateMonotonicity,
   recordAnomaly,
 };

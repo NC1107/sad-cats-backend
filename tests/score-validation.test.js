@@ -10,10 +10,38 @@ const {
   SOFT_CAP_HEADROOM,
   MAX_PRESTIGE_LEVEL,
   MAX_ASCENSION_LEVEL,
+  CLICK_DAMAGE_FLOOR,
+  CLICK_DAMAGE_MULT,
   computeMaxDelta,
+  computeMaxClickDamage,
   validateMonotonicity,
   recordAnomaly,
 } = require('../src/services/score-validation.service');
+
+describe('computeMaxClickDamage', () => {
+  test('uses the absolute floor when the delta is small/zero/missing', () => {
+    expect(computeMaxClickDamage(0)).toBe(CLICK_DAMAGE_FLOOR);
+    expect(computeMaxClickDamage(undefined)).toBe(CLICK_DAMAGE_FLOOR);
+    expect(computeMaxClickDamage(100)).toBe(CLICK_DAMAGE_FLOOR); // 100*20=2000 < floor
+  });
+
+  test('scales with the reported score delta above the floor', () => {
+    // 1e9 * 20 = 2e10, well above the floor
+    expect(computeMaxClickDamage(1e9)).toBe(1e9 * CLICK_DAMAGE_MULT);
+  });
+
+  test('clamps a forged instant-kill clickDamage well below the requested value', () => {
+    const forged = 1e12;
+    const normalDelta = 5000; // a typical per-2s score gain
+    const ceiling = computeMaxClickDamage(normalDelta);
+    expect(ceiling).toBe(CLICK_DAMAGE_FLOOR); // 5000*20=1e5 < floor → floor
+    expect(forged).toBeGreaterThan(ceiling);  // forged value would be clamped down
+  });
+
+  test('uses the magnitude of negative deltas', () => {
+    expect(computeMaxClickDamage(-1e9)).toBe(1e9 * CLICK_DAMAGE_MULT);
+  });
+});
 
 describe('computeMaxDelta', () => {
   test('returns 0 when gs is missing or elapsedSec <= 0', () => {
@@ -163,6 +191,38 @@ describe('validateMonotonicity', () => {
     expect(validateMonotonicity(null, baseline).violations).toEqual([]);
     expect(validateMonotonicity(baseline, null).violations).toEqual([]);
     expect(validateMonotonicity(null, null).violations).toEqual([]);
+  });
+
+  test('flags a prestigeMultiplier decrease as soft', () => {
+    const prev = { ...baseline, prestigeMultiplier: 5 };
+    const next = { ...baseline, prestigeMultiplier: 2 };
+    const { violations } = validateMonotonicity(prev, next);
+    expect(violations).toContainEqual(expect.objectContaining({
+      kind: 'monotonicity_prestigeMultiplier', severity: 'soft',
+    }));
+  });
+
+  test('tolerates a tiny prestigeMultiplier float dip (rounding)', () => {
+    const prev = { ...baseline, prestigeMultiplier: 2.0 };
+    const next = { ...baseline, prestigeMultiplier: 1.9995 }; // within 0.1%
+    const { violations } = validateMonotonicity(prev, next);
+    expect(violations.find(v => v.kind === 'monotonicity_prestigeMultiplier')).toBeUndefined();
+  });
+
+  test('flags an ascensionMultiplier decrease as soft', () => {
+    const prev = { ...baseline, ascensionMultiplier: 4 };
+    const next = { ...baseline, ascensionMultiplier: 1 };
+    const { violations } = validateMonotonicity(prev, next);
+    expect(violations).toContainEqual(expect.objectContaining({
+      kind: 'monotonicity_ascensionMultiplier', severity: 'soft',
+    }));
+  });
+
+  test('does not flag multipliers that grow or stay equal', () => {
+    const prev = { ...baseline, prestigeMultiplier: 2, ascensionMultiplier: 2 };
+    const next = { ...baseline, prestigeMultiplier: 3, ascensionMultiplier: 2 };
+    const { violations } = validateMonotonicity(prev, next);
+    expect(violations.find(v => v.kind.includes('Multiplier'))).toBeUndefined();
   });
 });
 

@@ -20,6 +20,7 @@ const logger = require('../utils/logger');
 const { computeTrustFactor } = require('../services/trust.service');
 const {
   computeMaxDelta,
+  computeMaxClickDamage,
   validateMonotonicity,
   recordAnomaly,
 } = require('../services/score-validation.service');
@@ -156,8 +157,19 @@ const addToScore = async (req, res, next) => {
     logger.info('Score updated', { discordId: scoreData.discordId, delta, source: req.user ? 'web' : 'bot' });
 
     // Non-blocking boss damage: only active clicks deal damage
-    const bossDmg = clickDamage && clickDamage > 0 ? clickDamage : 0;
+    let bossDmg = clickDamage && clickDamage > 0 ? clickDamage : 0;
     if (bossDmg > 0 && scoreData.discordId) {
+      // Anti-cheat: clamp clickDamage so a forged value can't one-shot the shared
+      // community boss. Boss damage can't legitimately exceed a generous multiple of
+      // the score earned in the same window (both come from clicks). Clamp + record.
+      const maxClickDamage = computeMaxClickDamage(delta);
+      if (bossDmg > maxClickDamage) {
+        recordAnomaly(scoreData.discordId, 'click_damage_clamped', {
+          severity: 'hard',
+          payload: { clickDamage: bossDmg, maxClickDamage, delta },
+        });
+        bossDmg = maxClickDamage;
+      }
       const dmgPromise = bossId
         ? applyBossDamage(bossId, scoreData.discordId, scoreData.username, bossDmg)
         : applyDamageToCurrentBoss(scoreData.discordId, scoreData.username, bossDmg);

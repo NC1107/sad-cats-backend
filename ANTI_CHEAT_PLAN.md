@@ -1,7 +1,52 @@
 # Server-side anti-cheat plan (H3)
 
-**Status:** **Phase 1 shipped** (commit forthcoming) — anomaly tracking active, zero behavioral change for legitimate clients. Phase 2 soak begins on deploy.
-**Last refreshed:** 2026-05-11.
+**Status:** **Phase 1 shipped** — anomaly tracking active. **Boss `clickDamage` clamp now enforced** (2026-06). Phase 2 soak ongoing.
+**Last refreshed:** 2026-06-19.
+
+---
+
+## 2026-06 hardening update (v2 prep)
+
+Shipped this round:
+
+- **`clickDamage` clamp (ENFORCED).** `scores.controller.js` now clamps boss
+  `clickDamage` to `computeMaxClickDamage(delta) = max(1e6, |delta| × 20)` and records a
+  `click_damage_clamped` (hard) anomaly when it fires. Boss damage comes only from active
+  clicks, so it can't legitimately exceed a generous multiple of the score earned in the
+  same window. This closes the worst live exploit: a forged `clickDamage: 1e12` instantly
+  defeating the shared community boss (free rewards + griefing). Unlike the score clamp,
+  this one **does** change behavior (the boss simply takes the capped damage) — safe because
+  the player's score is unaffected.
+- **Multiplier monotonicity.** `validateMonotonicity` now flags `prestigeMultiplier` /
+  `ascensionMultiplier` *decreases* (soft) — these are permanent cumulative bonuses.
+
+### ⚠️ Known gap discovered: `computeMaxDelta` is currently INERT
+
+`computeMaxDelta` reads `gs.catsPerSecond`, `gs.clickPower`, `gs.cpsMultiplier`,
+`gs.autoClicksPerSecond`, `gs.clickMultiplier` from the persisted `game_state` — **but the
+frontend's `buildSavePayload` does not persist any of those derived stats** (and with the
+schema now `.strip()`, anything not enumerated is dropped). So those fields are always
+absent → `perSec` computes to 0 → `maxDelta` is 0 → the `delta > maxDelta` soft-cap clamp in
+`addToScore` **never fires**. Score-delta inflation is therefore *not* actually validated
+today.
+
+**The real fix (next anti-cheat slice), pick one:**
+1. **Persist the derived stats** (`catsPerSecond`, `clickPower`, `clickMultiplier`,
+   `cpsMultiplier`, `autoClicksPerSecond`) in `buildSavePayload` + add them to
+   `gameStateSchema`, so `computeMaxDelta` has real inputs. Cheap, but a cheater can forge
+   them — bound via monotonicity/relationship to `prestigeLevel` (these reset on prestige, so
+   it's not simple non-decreasing).
+2. **Mirror the income formula server-side** from the persisted `upgrades` levels +
+   `prestigeMultiplier`/`ascensionMultiplier` (which ARE persisted and monotonicity-guarded).
+   More work, but unforgeable. This is the proper end-state.
+
+Until then, score-delta cheating via `addScore` is unmitigated. Tracked as the top item.
+
+### Also still open (from the original audit)
+- Flip clearly-illegitimate monotonicity violations (prestige/ascension multi-step jumps,
+  ceiling breaches) from log-only to **422 reject** + frontend reconcile (Phase 3). Needs the
+  frontend 422 handler (resilience slice).
+- `last_sync_at` (migration 022 column) still unused; controller anchors on `updated_at`.
 
 ---
 
