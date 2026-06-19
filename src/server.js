@@ -96,10 +96,16 @@ process.on('uncaughtException', (error) => {
   process.exit(1);
 });
 
-// Handle unhandled promise rejections
-process.on('unhandledRejection', (reason, promise) => {
-  logger.error('Unhandled Rejection', { reason, promise });
-  process.exit(1);
+// Handle unhandled promise rejections. Do NOT exit: this codebase has many
+// intentional fire-and-forget promises (boss damage, anomaly writes, activity
+// broadcasts), and a single missed .catch should not take down the whole server
+// and drop every in-flight request + WebSocket. Log loudly instead. (uncaughtException
+// above stays fatal — a truly uncaught throw can leave the process in a bad state.)
+process.on('unhandledRejection', (reason) => {
+  logger.error('Unhandled Rejection', {
+    reason: reason instanceof Error ? reason.message : String(reason),
+    stack: reason instanceof Error ? reason.stack : undefined,
+  });
 });
 
 // Graceful shutdown
