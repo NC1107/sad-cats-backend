@@ -8,6 +8,7 @@ jest.mock('../src/utils/logger', () => ({ warn: jest.fn(), error: jest.fn(), inf
 const pool = require('../src/config/database');
 const {
   SOFT_CAP_HEADROOM,
+  MAX_HUMAN_CPS,
   MAX_PRESTIGE_LEVEL,
   MAX_ASCENSION_LEVEL,
   CLICK_DAMAGE_FLOOR,
@@ -50,20 +51,28 @@ describe('computeMaxDelta', () => {
     expect(computeMaxDelta({ catsPerSecond: 100 }, -5)).toBe(0);
   });
 
-  test('returns 0 when there is no passive or auto-click income', () => {
-    expect(computeMaxDelta({ catsPerSecond: 0, autoClicksPerSecond: 0 }, 60)).toBe(0);
+  test('clickPower floors at 1, so every real player has a nonzero ceiling from clicks', () => {
+    // empty gs → clickPower defaults to 1 → manual income 17/sec → 17 × 60 × 10 = 10,200
+    expect(computeMaxDelta({}, 60)).toBe(MAX_HUMAN_CPS * 1 * 60 * SOFT_CAP_HEADROOM);
   });
 
-  test('applies the 10× headroom multiplier', () => {
-    // 100 CPS × 1 mult × 60 sec × 10 headroom = 60,000
+  test('applies the 10× headroom multiplier to the per-second income', () => {
+    // passive 100 + manual (17 × clickPower 1) = 117/sec × 60 × 10 = 70,200
     const out = computeMaxDelta({ catsPerSecond: 100 }, 60);
-    expect(out).toBe(100 * 60 * SOFT_CAP_HEADROOM);
+    expect(out).toBe((100 + MAX_HUMAN_CPS) * 60 * SOFT_CAP_HEADROOM);
   });
 
-  test('multiplies passive and auto-click streams correctly', () => {
-    // passive: 100 × 2 × 3 × 1 = 600
-    // auto:    5 × 10 × 1 × 3 × 1 = 150
-    // total per sec: 750; over 10 sec × 10 headroom = 75000
+  test('includes manual-click income (max human cps × clickPower)', () => {
+    // no passive/auto; manual = 17 × clickPower(10) = 170/sec → × 60 × 10 = 102,000
+    const out = computeMaxDelta({ clickPower: 10 }, 60);
+    expect(out).toBe(MAX_HUMAN_CPS * 10 * 60 * SOFT_CAP_HEADROOM);
+  });
+
+  test('sums passive, auto, and manual-click streams correctly', () => {
+    // passive: 100 × 2 × 3 × 1                 = 600
+    // auto:    5 × 10 × 1 × 3 × 1              = 150
+    // manual:  17 × 10 × 1 × 3 × 1             = 510
+    // total per sec: 1260; over 10 sec × 10 headroom = 126,000
     const gs = {
       catsPerSecond: 100,
       cpsMultiplier: 2,
@@ -73,13 +82,14 @@ describe('computeMaxDelta', () => {
       clickPower: 10,
       clickMultiplier: 1,
     };
-    expect(computeMaxDelta(gs, 10)).toBe(75_000);
+    expect(computeMaxDelta(gs, 10)).toBe(126_000);
   });
 
   test('coerces non-numeric fields to safe defaults', () => {
     const gs = { catsPerSecond: '100', cpsMultiplier: null, prestigeMultiplier: undefined };
-    // cpsMult fallback 1, prestige fallback 1, ascMult fallback 1 → 100 × 1×1×1 = 100/sec → 600 × 10 = 6000
-    expect(computeMaxDelta(gs, 60)).toBe(60_000);
+    // cps 100, mults fallback 1, clickPower fallback 1: passive 100 + manual 17 = 117/sec
+    // × 60 × 10 = 70,200
+    expect(computeMaxDelta(gs, 60)).toBe(70_200);
   });
 });
 

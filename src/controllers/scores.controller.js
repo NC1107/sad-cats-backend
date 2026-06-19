@@ -85,12 +85,15 @@ const addToScore = async (req, res, next) => {
         return res.status(503).json({ error: 'Service temporarily unavailable' });
       }
 
-      // Server-side soft-cap validation. The maxDelta math is extracted into
-      // services/score-validation.service.js (computeMaxDelta). Elapsed-time
-      // anchor is `updated_at` — server-controlled (gs.lastCalculated is
-      // client-set and was forgeable). When the clamp fires, we persist a row
-      // to score_anomalies for Phase 2 soak review. Behavior otherwise
-      // unchanged — clamp + serve, no rejection in Phase 1.
+      // Server-side soft-cap validation (computeMaxDelta in score-validation.service).
+      // The earnings ceiling is now real: the frontend persists derived income stats
+      // (catsPerSecond/clickPower/…) so computeMaxDelta can compute perSec from
+      // unforgeable-ish persisted state. Elapsed-time anchor is `updated_at`
+      // (server-controlled). We run OBSERVE-ONLY: record an anomaly when a delta
+      // exceeds the ceiling but DO NOT clamp/reject yet — flipping to enforcement
+      // happens after a soak confirms the formula produces ~zero false positives for
+      // legitimate play (see ANTI_CHEAT_PLAN.md). Serving the full delta keeps this
+      // change zero-risk for legit players.
       let validatedDelta = delta;
       if (delta > 0) {
         try {
@@ -105,18 +108,19 @@ const addToScore = async (req, res, next) => {
           const elapsedSec = Math.min(Math.max(0, (Date.now() - lastSyncMs) / 1000), 86400 * 3);
           const maxDelta = computeMaxDelta(gs, elapsedSec);
           if (maxDelta > 0 && delta > maxDelta) {
-            validatedDelta = Math.min(delta, maxDelta);
-            recordAnomaly(user.discordId, 'delta_clamped', {
+            recordAnomaly(user.discordId, 'delta_exceeds_max', {
               delta,
               maxDelta,
               elapsedSec: Math.round(elapsedSec),
-              severity: 'soft',
-              payload: { sourceClamp: 'maxDelta' },
+              // soft today (observe-only). Mark the egregious cases hard so the soak
+              // dashboard can separate "buff stacking near the cap" from "obvious forgery".
+              severity: delta > maxDelta * 10 ? 'hard' : 'soft',
+              payload: { ratio: maxDelta > 0 ? delta / maxDelta : null, enforced: false },
             });
           }
         } catch (e) {
           // Non-blocking — don't fail score update for validation
-          logger.warn('Offline earnings validation failed', { error: e.message });
+          logger.warn('Score-delta validation failed', { error: e.message });
         }
       }
 

@@ -50,6 +50,15 @@ const gameStateSchema = z.object({
       upgrades: z.record(z.string(), z.number().int().min(0)).optional().default({}),
       prestigeLevel: z.number().int().min(0).optional().default(0),
       prestigeMultiplier: z.number().min(1).optional().default(1),
+      // Derived income stats (deterministic from upgrades+prestige via recalcDerived).
+      // Persisted so the anti-cheat soft-cap (computeMaxDelta) has a real earnings
+      // ceiling to validate score deltas against. No max — they grow unbounded with
+      // prestige (and are lossy-as-Number above 9e15, acceptable for a ceiling).
+      catsPerSecond: z.number().min(0).optional().default(0),
+      clickPower: z.number().min(0).optional().default(1),
+      clickMultiplier: z.number().min(0).optional().default(1),
+      cpsMultiplier: z.number().min(0).optional().default(1),
+      autoClicksPerSecond: z.number().min(0).optional().default(0),
       // lifetimeEarnings / cycleEarnings: serialized as Number on the wire (lossy
       // above 9e15 — acceptable trade for a simple contract; the canonical Decimal
       // string lives in localStorage and the score column).

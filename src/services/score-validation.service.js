@@ -19,6 +19,11 @@ const logger = require('../utils/logger');
 // 10× was the pre-extraction inline value. Phase 2 soak will retune.
 const SOFT_CAP_HEADROOM = 10;
 
+// Max sustained human click rate — same threshold as the per-request cps hard-reject.
+// Used so computeMaxDelta accounts for manual-click income (otherwise a click-heavy
+// build's legitimate delta would exceed the ceiling).
+const MAX_HUMAN_CPS = 17;
+
 // Backstops — every monotonicity rule includes a hard ceiling so a single
 // escaped rule can't let a value explode arbitrarily.
 const MAX_PRESTIGE_LEVEL = 10_000;
@@ -68,7 +73,11 @@ function computeMaxDelta(gs, elapsedSec) {
 
   const passive = cps * cpsMult * prestigeMult * ascMult;
   const auto = autoClicks * clickPower * clickMult * prestigeMult * ascMult;
-  const perSec = passive + auto;
+  // Manual clicks: bounded by the max human click rate. Critical to include — for a
+  // click-heavy build this dwarfs passive/auto income, and without it a legitimate
+  // delta would blow past the ceiling (and a future clamp would eat real progress).
+  const manual = MAX_HUMAN_CPS * clickPower * clickMult * prestigeMult * ascMult;
+  const perSec = passive + auto + manual;
   if (perSec <= 0) return 0;
 
   return perSec * elapsedSec * SOFT_CAP_HEADROOM;
@@ -268,6 +277,7 @@ async function recordAnomaly(discordId, kind, meta = {}) {
 
 module.exports = {
   SOFT_CAP_HEADROOM,
+  MAX_HUMAN_CPS,
   MAX_PRESTIGE_LEVEL,
   MAX_ASCENSION_LEVEL,
   CLICK_DAMAGE_FLOOR,

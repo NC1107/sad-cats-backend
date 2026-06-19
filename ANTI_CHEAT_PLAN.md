@@ -20,27 +20,31 @@ Shipped this round:
 - **Multiplier monotonicity.** `validateMonotonicity` now flags `prestigeMultiplier` /
   `ascensionMultiplier` *decreases* (soft) — these are permanent cumulative bonuses.
 
-### ⚠️ Known gap discovered: `computeMaxDelta` is currently INERT
+### Score-delta validation is now LIVE (observe-only) — was previously inert
 
-`computeMaxDelta` reads `gs.catsPerSecond`, `gs.clickPower`, `gs.cpsMultiplier`,
-`gs.autoClicksPerSecond`, `gs.clickMultiplier` from the persisted `game_state` — **but the
-frontend's `buildSavePayload` does not persist any of those derived stats** (and with the
-schema now `.strip()`, anything not enumerated is dropped). So those fields are always
-absent → `perSec` computes to 0 → `maxDelta` is 0 → the `delta > maxDelta` soft-cap clamp in
-`addToScore` **never fires**. Score-delta inflation is therefore *not* actually validated
-today.
+Previously `computeMaxDelta` read derived stats (`catsPerSecond`, `clickPower`, …) that the
+frontend never persisted, so `maxDelta` was always 0 and the soft-cap never fired. Fixed:
 
-**The real fix (next anti-cheat slice), pick one:**
-1. **Persist the derived stats** (`catsPerSecond`, `clickPower`, `clickMultiplier`,
-   `cpsMultiplier`, `autoClicksPerSecond`) in `buildSavePayload` + add them to
-   `gameStateSchema`, so `computeMaxDelta` has real inputs. Cheap, but a cheater can forge
-   them — bound via monotonicity/relationship to `prestigeLevel` (these reset on prestige, so
-   it's not simple non-decreasing).
-2. **Mirror the income formula server-side** from the persisted `upgrades` levels +
-   `prestigeMultiplier`/`ascensionMultiplier` (which ARE persisted and monotonicity-guarded).
-   More work, but unforgeable. This is the proper end-state.
+- **Frontend now persists the derived income stats** in `buildSavePayload` (computed via
+  `recalcDerived(upgrades, prestigeLevel)` at save time — chosen over mirroring the whole
+  income formula on the backend, which would just create cross-repo drift). They're in
+  `gameStateSchema` so `.strip()` keeps them.
+- **`computeMaxDelta` now also models manual-click income** (`MAX_HUMAN_CPS × clickPower ×
+  clickMult × prestige × asc`). This was missing entirely — without it a click-heavy build's
+  legitimate delta blows past the ceiling, which would make any future clamp eat real progress.
+- **The controller runs OBSERVE-ONLY:** it records a `delta_exceeds_max` anomaly (severity
+  `hard` when `delta > 10× maxDelta`, else `soft`) but serves the full delta — **no clamp, no
+  reject**. Zero risk to legit players while we gather soak data on the new signal.
 
-Until then, score-delta cheating via `addScore` is unmitigated. Tracked as the top item.
+**Flip-to-enforce (next step):** after a soak confirms `delta_exceeds_max` is near-zero for
+legitimate play, change the controller to clamp (`min(delta, maxDelta)`) or 422-reject the
+`hard` cases. Pair the 422 path with a frontend reconcile handler.
+
+**Still open — sophisticated forger:** a cheater who *also* forges the persisted derived stats
+(`catsPerSecond: 1e30`) raises their own ceiling and evades the anomaly. The common exploit
+(`addScore(1e27)` with an untouched game_state) IS now caught. To close the forgery gap, bound
+the persisted derived stats server-side against the `upgrades` (monotonicity-guarded) — i.e.
+the income-formula mirror, deferred until soak shows it's needed.
 
 ### Also still open (from the original audit)
 - Flip clearly-illegitimate monotonicity violations (prestige/ascension multi-step jumps,
