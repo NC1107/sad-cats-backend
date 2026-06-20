@@ -260,6 +260,122 @@ const countCombatWins = async (discordId, executor = pool) => {
   }
 };
 
+// ========== Dispatch ==========
+
+const getActiveDispatches = async (discordId, executor = pool) => {
+  try {
+    const result = await executor.query(
+      `SELECT d.id, d.quest_id, d.started_at, d.ends_at,
+              COALESCE(array_agg(m.player_card_id) FILTER (WHERE m.player_card_id IS NOT NULL), '{}') AS card_ids
+       FROM player_dispatches d
+       LEFT JOIN player_dispatch_members m ON m.dispatch_id = d.id
+       WHERE d.discord_id = $1 AND d.collected = FALSE
+       GROUP BY d.id
+       ORDER BY d.ends_at ASC`,
+      [discordId]
+    );
+    return result.rows;
+  } catch (error) {
+    logger.error('Error getting dispatches', { error: error.message, discordId });
+    throw new InternalError('Failed to get dispatches');
+  }
+};
+
+/** Set of player_card_ids currently out on an active dispatch (unavailable). */
+const getBusyCardIds = async (discordId, executor = pool) => {
+  try {
+    const result = await executor.query(
+      `SELECT m.player_card_id
+       FROM player_dispatch_members m
+       JOIN player_dispatches d ON d.id = m.dispatch_id
+       WHERE d.discord_id = $1 AND d.collected = FALSE`,
+      [discordId]
+    );
+    return new Set(result.rows.map(r => r.player_card_id));
+  } catch {
+    return new Set();
+  }
+};
+
+const insertDispatch = async (discordId, questId, endsAt, playerCardIds, executor = pool) => {
+  const d = await executor.query(
+    `INSERT INTO player_dispatches (discord_id, quest_id, ends_at) VALUES ($1, $2, $3) RETURNING *`,
+    [discordId, questId, endsAt]
+  );
+  const dispatch = d.rows[0];
+  for (const cardId of playerCardIds) {
+    await executor.query(
+      `INSERT INTO player_dispatch_members (dispatch_id, player_card_id) VALUES ($1, $2)`,
+      [dispatch.id, cardId]
+    );
+  }
+  return dispatch;
+};
+
+/** Fetch one dispatch (with its cats) belonging to the user, locked for collect. */
+const getDispatchForCollect = async (dispatchId, discordId, executor = pool) => {
+  const result = await executor.query(
+    `SELECT d.id, d.quest_id, d.ends_at, d.collected,
+            COALESCE(array_agg(m.player_card_id) FILTER (WHERE m.player_card_id IS NOT NULL), '{}') AS card_ids
+     FROM player_dispatches d
+     LEFT JOIN player_dispatch_members m ON m.dispatch_id = d.id
+     WHERE d.id = $1 AND d.discord_id = $2
+     GROUP BY d.id
+     FOR UPDATE OF d`,
+    [dispatchId, discordId]
+  );
+  return result.rows[0] || null;
+};
+
+const markDispatchCollected = async (dispatchId, executor = pool) => {
+  const result = await executor.query(
+    `UPDATE player_dispatches SET collected = TRUE, collected_at = NOW()
+     WHERE id = $1 AND collected = FALSE`,
+    [dispatchId]
+  );
+  return result.rowCount === 1;
+};
+
+// ========== Daily quests ==========
+
+/** Per-day progress counts (combat_sessions / dispatches since `since`). */
+const getDailyCounts = async (discordId, since, executor = pool) => {
+  try {
+    const result = await executor.query(
+      `SELECT
+         (SELECT COUNT(*)::int FROM combat_sessions WHERE discord_id = $1 AND result = 'win' AND created_at >= $2) AS wins_today,
+         (SELECT COUNT(*)::int FROM combat_sessions WHERE discord_id = $1 AND created_at >= $2) AS battles_today,
+         (SELECT COUNT(*)::int FROM player_dispatches WHERE discord_id = $1 AND started_at >= $2) AS dispatches_today`,
+      [discordId, since]
+    );
+    return result.rows[0] || { wins_today: 0, battles_today: 0, dispatches_today: 0 };
+  } catch {
+    return { wins_today: 0, battles_today: 0, dispatches_today: 0 };
+  }
+};
+
+const getDailyClaims = async (discordId, questDate, executor = pool) => {
+  try {
+    const result = await executor.query(
+      `SELECT quest_id FROM player_daily_claims WHERE discord_id = $1 AND quest_date = $2`,
+      [discordId, questDate]
+    );
+    return result.rows.map(r => r.quest_id);
+  } catch {
+    return [];
+  }
+};
+
+/** Idempotent daily claim: true only on the first claim for (date, quest). */
+const tryClaimDaily = async (discordId, questDate, questId, executor = pool) => {
+  const result = await executor.query(
+    `INSERT INTO player_daily_claims (discord_id, quest_date, quest_id) VALUES ($1, $2, $3)
+     ON CONFLICT DO NOTHING RETURNING quest_id`,
+    [discordId, questDate, questId]
+  );
+  return result.rows.length > 0;
+};
+
 module.exports = {
   getCatRows,
   ensureStatRow,
@@ -278,4 +394,12 @@ module.exports = {
   tryClaimNode,
   insertCombatSession,
   countCombatWins,
+  getActiveDispatches,
+  getBusyCardIds,
+  insertDispatch,
+  getDispatchForCollect,
+  markDispatchCollected,
+  getDailyCounts,
+  getDailyClaims,
+  tryClaimDaily,
 };

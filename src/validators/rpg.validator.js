@@ -19,7 +19,17 @@ const startCombatSchema = z.object({
   }).strip(),
 });
 
+// POST /api/rpg/dispatch/accept — { questId, playerCardIds }. Tier/eligibility
+// checks happen in the controller; here we only constrain the shape.
+const acceptDispatchSchema = z.object({
+  body: z.object({
+    questId: z.string().min(1).max(64),
+    playerCardIds: z.array(z.string().uuid()).min(1).max(4),
+  }).strip(),
+});
+
 module.exports = {
   setPartySchema,
   startCombatSchema,
+  acceptDispatchSchema,
 };
