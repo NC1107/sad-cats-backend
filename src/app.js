@@ -88,6 +88,12 @@ app.use('/api/inventory', inventoryRoutes);
 app.use('/api/collection', collectionRoutes);
 app.use('/api/rpg', rpgRoutes);
 
+// Dev-only auth backdoor (mint a JWT without Discord OAuth). Double-gated:
+// not mounted in production, and the router itself 404s if NODE_ENV is production.
+if (process.env.NODE_ENV !== 'production') {
+  app.use('/api/dev', require('./routes/dev.routes'));
+}
+
 // Root endpoint
 app.get('/', (req, res) => {
   res.json({

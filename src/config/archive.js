@@ -55,5 +55,12 @@ const closeArchive = () => {
   }
 };
 
+// Consumers use the default export AS the db and guard with `if (!archiveDb)`,
+// so it must stay falsy when the archive is unavailable. Only attach closeArchive
+// when the db actually connected — otherwise `module.exports` is null and setting
+// a property on it throws at load time (which would crash boot for any operator
+// without the archive sqlite present, defeating the catch above).
 module.exports = archiveDb;
-module.exports.closeArchive = closeArchive;
+if (archiveDb) {
+  module.exports.closeArchive = closeArchive;
+}
