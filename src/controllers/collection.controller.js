@@ -364,8 +364,15 @@ const sellCard = async (req, res, next) => {
       const card = result.rows[0];
 
       // Lock all copies of this card for this user before counting/deleting.
+      // Join RPG progression so we can protect leveled copies: a copy with no
+      // stat row reads as level 1 (COALESCE). Order lowest-level first so the
+      // sale targets the least-invested copy regardless of which id was sent.
       const copies = await client.query(
-        'SELECT id FROM player_cards WHERE discord_id = $1 AND card_id = $2 FOR UPDATE',
+        `SELECT pc.id, COALESCE(s.level, 1) AS level
+         FROM player_cards pc
+         LEFT JOIN player_cat_stats s ON s.player_card_id = pc.id
+         WHERE pc.discord_id = $1 AND pc.card_id = $2
+         FOR UPDATE OF pc`,
         [discordId, card.card_id]
       );
 
@@ -375,7 +382,16 @@ const sellCard = async (req, res, next) => {
 
       const value = DUPLICATE_CATNIP[card.rarity] || 5;
 
-      const del = await client.query('DELETE FROM player_cards WHERE id = $1 AND discord_id = $2', [playerCardId, discordId]);
+      // Redirect the sale to the lowest-level copy so a player can't accidentally
+      // destroy a leveled cat by selling "a duplicate". If every copy is leveled
+      // past 1, block the sale outright.
+      const sorted = copies.rows.slice().sort((a, b) => a.level - b.level);
+      const target = sorted[0];
+      if (Number(target.level) > 1) {
+        throw new ConflictError('All copies of this cat are leveled — level up resets are not reversible, so selling is blocked');
+      }
+
+      const del = await client.query('DELETE FROM player_cards WHERE id = $1 AND discord_id = $2', [target.id, discordId]);
       if (del.rowCount !== 1) {
         throw new ConflictError('Card changed during sale — please try again');
       }

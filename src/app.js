@@ -18,6 +18,7 @@ const bossRoutes = require('./routes/boss.routes');
 const adminRoutes = require('./routes/admin.routes');
 const inventoryRoutes = require('./routes/inventory.routes');
 const collectionRoutes = require('./routes/collection.routes');
+const rpgRoutes = require('./routes/rpg.routes');
 
 const app = express();
 
@@ -85,6 +86,7 @@ app.use('/api/boss', bossRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/inventory', inventoryRoutes);
 app.use('/api/collection', collectionRoutes);
+app.use('/api/rpg', rpgRoutes);
 
 // Root endpoint
 app.get('/', (req, res) => {
