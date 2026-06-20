@@ -106,6 +106,9 @@ const gameStateSchema = z.object({
       totalDailyChallengesClaimed: z.number().int().min(0).optional().default(0),
       cosmicPullCount: z.number().int().min(0).optional().default(0),
 
+      // --- Per-section playtime (seconds spent on each mobile tab / desktop)
+      playtimeBySection: z.record(z.string(), z.number().min(0)).optional().default({}),
+
       // --- Admin / sync metadata
       // Server is authoritative for _adminVersion — frontend echoes it back so we
       // can detect stale-client overwrites (see saveFullState handler).

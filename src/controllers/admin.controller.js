@@ -845,8 +845,20 @@ const loadDevPreset = async (req, res, next) => {
     const p = DEV_PRESETS[preset];
     const adminId = getActorId(req);
 
+    // Auto-snapshot the current state before overwriting so the admin can restore it.
+    const existing = await pool.query(
+      'SELECT discord_id, username, score, game_state FROM scores WHERE discord_id = $1',
+      [discordId]
+    );
+    if (existing.rows.length > 0) {
+      const backupDir = path.join(__dirname, '../../backups');
+      if (!fs.existsSync(backupDir)) fs.mkdirSync(backupDir, { recursive: true });
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const filename = `${discordId}_pre-${preset}_${timestamp}.json`;
+      fs.writeFileSync(path.join(backupDir, filename), JSON.stringify(existing.rows[0], null, 2));
+    }
+
     // Bump _adminVersion to invalidate stale client saves
-    const existing = await pool.query('SELECT game_state FROM scores WHERE discord_id = $1', [discordId]);
     const currentVersion = existing.rows[0]?.game_state?._adminVersion || 0;
     const newState = { ...p.gameState, _adminVersion: currentVersion + 1 };
 
