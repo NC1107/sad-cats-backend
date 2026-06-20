@@ -1,6 +1,7 @@
 const pool = require('../config/database');
 const logger = require('../utils/logger');
 const { InternalError } = require('../utils/errors');
+const rpgStats = require('../utils/rpgStats');
 
 // ========== Cat stats ==========
 
@@ -158,6 +159,107 @@ const insertPartySlot = async (discordId, playerCardId, slot, executor = pool) =
   );
 };
 
+// ========== XP grant (auto-level) ==========
+
+/**
+ * Add XP to one cat, auto-leveling through the curve up to its rarity cap.
+ * Returns the resulting { level, xp, leveledUp }.
+ */
+const grantXp = async (cat, addXp, executor = pool) => {
+  try {
+    const cap = rpgStats.levelCap(cat.rarity);
+    const currentTotal = rpgStats.cumulativeXpToReach(cat.level) + cat.xp;
+    const { level, xp } = rpgStats.resolveLevelFromTotalXp(currentTotal + addXp, cap);
+    await setLevelXp(cat.playerCardId, cat.discordId, cat.cardId, level, xp, executor);
+    return { level, xp, leveledUp: level > cat.level };
+  } catch (error) {
+    logger.error('Error granting XP', { error: error.message, playerCardId: cat.playerCardId });
+    throw new InternalError('Failed to grant XP');
+  }
+};
+
+// ========== Story ==========
+
+const getStoryProgress = async (discordId, executor = pool) => {
+  try {
+    const result = await executor.query(
+      'SELECT current_node FROM player_story_progress WHERE discord_id = $1',
+      [discordId]
+    );
+    return result.rows[0]?.current_node || 'ch1_n1';
+  } catch (error) {
+    logger.error('Error getting story progress', { error: error.message, discordId });
+    return 'ch1_n1';
+  }
+};
+
+const setStoryProgress = async (discordId, nodeId, executor = pool) => {
+  await executor.query(
+    `INSERT INTO player_story_progress (discord_id, current_node, updated_at)
+     VALUES ($1, $2, NOW())
+     ON CONFLICT (discord_id) DO UPDATE SET current_node = EXCLUDED.current_node, updated_at = NOW()`,
+    [discordId, nodeId]
+  );
+};
+
+const getStoryClaims = async (discordId, executor = pool) => {
+  try {
+    const result = await executor.query(
+      'SELECT node_id FROM player_story_claims WHERE discord_id = $1',
+      [discordId]
+    );
+    return result.rows.map(r => r.node_id);
+  } catch (error) {
+    logger.error('Error getting story claims', { error: error.message, discordId });
+    return [];
+  }
+};
+
+/**
+ * Record a node's reward as claimed. PK(discord_id, node_id) makes this an
+ * idempotent guard: returns true only on the FIRST claim, false on repeats —
+ * so the caller grants the guaranteed card exactly once.
+ */
+const tryClaimNode = async (discordId, nodeId, executor = pool) => {
+  const result = await executor.query(
+    `INSERT INTO player_story_claims (discord_id, node_id) VALUES ($1, $2)
+     ON CONFLICT DO NOTHING RETURNING node_id`,
+    [discordId, nodeId]
+  );
+  return result.rows.length > 0;
+};
+
+// ========== Combat sessions ==========
+
+const insertCombatSession = async (session, executor = pool) => {
+  try {
+    await executor.query(
+      `INSERT INTO combat_sessions
+         (discord_id, encounter_id, party_snapshot, seed, result, turns, xp_granted, catnip_granted)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [
+        session.discordId, session.encounterId, JSON.stringify(session.partySnapshot),
+        session.seed, session.result, session.turns, session.xpGranted, session.catnipGranted,
+      ]
+    );
+  } catch (error) {
+    logger.error('Error inserting combat session', { error: error.message, discordId: session.discordId });
+    // Non-fatal: the fight already resolved and rewards applied; just log.
+  }
+};
+
+const countCombatWins = async (discordId, executor = pool) => {
+  try {
+    const result = await executor.query(
+      `SELECT COUNT(*)::int AS wins FROM combat_sessions WHERE discord_id = $1 AND result = 'win'`,
+      [discordId]
+    );
+    return result.rows[0]?.wins || 0;
+  } catch {
+    return 0;
+  }
+};
+
 module.exports = {
   getCatRows,
   ensureStatRow,
@@ -169,4 +271,11 @@ module.exports = {
   filterOwnedCardIds,
   clearParty,
   insertPartySlot,
+  grantXp,
+  getStoryProgress,
+  setStoryProgress,
+  getStoryClaims,
+  tryClaimNode,
+  insertCombatSession,
+  countCombatWins,
 };

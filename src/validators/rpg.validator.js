@@ -11,6 +11,15 @@ const setPartySchema = z.object({
   }).strip(),
 });
 
+// POST /api/rpg/combat/start — body { encounterId }. The encounter is validated
+// against the story catalog in the controller; here we only constrain the shape.
+const startCombatSchema = z.object({
+  body: z.object({
+    encounterId: z.string().min(1).max(64),
+  }).strip(),
+});
+
 module.exports = {
   setPartySchema,
+  startCombatSchema,
 };
