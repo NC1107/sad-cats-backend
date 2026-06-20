@@ -137,8 +137,9 @@ const shutdown = async (signal) => {
       await closeRedis();
       logger.info('Redis connection closed');
 
-      const { closeArchive } = require('./config/archive');
-      closeArchive();
+      // Defensive: the archive export is null when the archive DB is unavailable.
+      const archive = require('./config/archive');
+      if (archive && typeof archive.closeArchive === 'function') archive.closeArchive();
 
       logger.info('Graceful shutdown completed');
       process.exit(0);
