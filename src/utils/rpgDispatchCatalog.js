@@ -34,7 +34,11 @@ function publicTiers() {
     cats: t.cats,
     catnip: t.catnip,
     xp: t.xp,
-    statCheck: t.statCheck ? `${STAT_CHECK_LABEL[t.statCheck.stat]} ≥ ${t.statCheck.min}` : null,
+    // Structured for the client's eligibility math; `label` for display. (No
+    // more parsing a human string back into data on the frontend.)
+    statCheck: t.statCheck
+      ? { stat: t.statCheck.stat, min: t.statCheck.min, label: `${STAT_CHECK_LABEL[t.statCheck.stat]} ≥ ${t.statCheck.min}` }
+      : null,
   }));
 }
 

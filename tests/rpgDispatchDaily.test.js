@@ -15,12 +15,12 @@ describe('rpgDispatchCatalog', () => {
     expect(dispatch.getTier('nope')).toBeNull();
   });
 
-  test('publicTiers renders a human-readable stat check', () => {
+  test('publicTiers returns a structured stat check (stat/min/label)', () => {
     const tiers = dispatch.publicTiers();
     expect(tiers.find(t => t.id === 'patrol').statCheck).toBeNull();
-    expect(tiers.find(t => t.id === 'scout').statCheck).toBe('Combined SPD ≥ 40');
-    expect(tiers.find(t => t.id === 'expedition').statCheck).toBe('Combined ATK ≥ 120');
-    expect(tiers.find(t => t.id === 'saga').statCheck).toBe('Combined HP ≥ 600');
+    expect(tiers.find(t => t.id === 'scout').statCheck).toEqual({ stat: 'spd', min: 40, label: 'Combined SPD ≥ 40' });
+    expect(tiers.find(t => t.id === 'expedition').statCheck).toMatchObject({ stat: 'atk', min: 120 });
+    expect(tiers.find(t => t.id === 'saga').statCheck).toMatchObject({ stat: 'hp', min: 600 });
   });
 
   test('higher tiers reward more catnip and xp', () => {
