@@ -376,9 +376,82 @@ const tryClaimDaily = async (discordId, questDate, questId, executor = pool) => 
   return result.rows.length > 0;
 };
 
+// ========== Admin save snapshot/restore (cat tables) ==========
+//
+// The admin save-switcher / snapshot / restore historically only touched
+// scores.game_state + score. These helpers let those flows treat the cat
+// tables as part of the save: snapshot captures every cat row (with its UUIDs
+// preserved), clear wipes them, and restore re-inserts them in FK order.
+
+const CAT_TABLES_RESTORE_ORDER = [
+  'player_cards',          // parent — must restore before its dependents
+  'player_cat_stats',      // → player_cards
+  'player_party',          // → player_cards
+  'player_dispatches',     // parent for members
+  'player_dispatch_members', // → player_dispatches, player_cards
+  'player_story_progress',
+  'player_story_claims',
+  'player_daily_claims',
+  'rpg_starter_grants',
+];
+
+/** Capture every cat-related row for a user (UUIDs included) for a snapshot. */
+const snapshotCats = async (discordId) => {
+  const rows = sql => pool.query(sql, [discordId]).then(r => r.rows);
+  return {
+    player_cards:            await rows('SELECT * FROM player_cards WHERE discord_id = $1'),
+    player_cat_stats:        await rows('SELECT * FROM player_cat_stats WHERE discord_id = $1'),
+    player_party:            await rows('SELECT * FROM player_party WHERE discord_id = $1'),
+    player_dispatches:       await rows('SELECT * FROM player_dispatches WHERE discord_id = $1'),
+    player_dispatch_members: await rows('SELECT m.* FROM player_dispatch_members m JOIN player_dispatches d ON d.id = m.dispatch_id WHERE d.discord_id = $1'),
+    player_story_progress:   await rows('SELECT * FROM player_story_progress WHERE discord_id = $1'),
+    player_story_claims:     await rows('SELECT * FROM player_story_claims WHERE discord_id = $1'),
+    player_daily_claims:     await rows('SELECT * FROM player_daily_claims WHERE discord_id = $1'),
+    rpg_starter_grants:      await rows('SELECT * FROM rpg_starter_grants WHERE discord_id = $1'),
+  };
+};
+
+/** Delete all cat rows for a user. Relies on ON DELETE CASCADE for children. */
+const clearCats = async (discordId, executor = pool) => {
+  await executor.query('DELETE FROM combat_sessions WHERE discord_id = $1', [discordId]);
+  await executor.query('DELETE FROM player_dispatches WHERE discord_id = $1', [discordId]); // cascades members
+  await executor.query('DELETE FROM player_cards WHERE discord_id = $1', [discordId]);       // cascades cat_stats, party, members
+  await executor.query('DELETE FROM player_story_progress WHERE discord_id = $1', [discordId]);
+  await executor.query('DELETE FROM player_story_claims WHERE discord_id = $1', [discordId]);
+  await executor.query('DELETE FROM player_daily_claims WHERE discord_id = $1', [discordId]);
+  await executor.query('DELETE FROM rpg_starter_grants WHERE discord_id = $1', [discordId]);
+};
+
+// Re-insert a captured row. Table name is from the hardcoded order list (not
+// user input); columns are the real column names returned by SELECT *; values
+// are fully parameterized.
+const insertCatRow = async (table, row, executor) => {
+  const cols = Object.keys(row);
+  if (cols.length === 0) return;
+  const placeholders = cols.map((_, i) => `$${i + 1}`);
+  await executor.query(
+    `INSERT INTO ${table} (${cols.join(', ')}) VALUES (${placeholders.join(', ')}) ON CONFLICT DO NOTHING`,
+    cols.map(c => row[c])
+  );
+};
+
+/** Wipe a user's cats, then re-insert from a snapshot (FK-safe order). */
+const restoreCats = async (discordId, cats, executor = pool) => {
+  await clearCats(discordId, executor);
+  if (!cats) return;
+  for (const table of CAT_TABLES_RESTORE_ORDER) {
+    for (const row of cats[table] || []) {
+      await insertCatRow(table, row, executor);
+    }
+  }
+};
+
 module.exports = {
   getCatRows,
   ensureStatRow,
+  snapshotCats,
+  clearCats,
+  restoreCats,
   setLevelXp,
   getTotalCatLevels,
   hasStarterGrant,
