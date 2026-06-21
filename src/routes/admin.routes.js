@@ -29,6 +29,7 @@ const {
   getUserInventory,
   adminGiveToys,
   adminGiveCard,
+  adminGiveAllCards,
   adminGiveCatnip,
   adminRemoveToy,
   adminRemoveCard,
@@ -80,6 +81,7 @@ router.get('/anomalies', listAnomalies);
 router.get('/users/:discordId/inventory', getUserInventory);
 router.post('/users/:discordId/give-toys', adminGiveToys);
 router.post('/users/:discordId/give-card', adminGiveCard);
+router.post('/users/:discordId/give-all-cards', adminGiveAllCards);
 router.post('/users/:discordId/give-catnip', adminGiveCatnip);
 router.delete('/users/:discordId/remove-toy/:toyId', adminRemoveToy);
 router.delete('/users/:discordId/remove-card/:cardId', adminRemoveCard);
