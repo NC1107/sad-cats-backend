@@ -21,7 +21,11 @@ const getCatRows = async (discordId, executor = pool) => {
               COALESCE(s.level, 1)   AS level,
               COALESCE(s.xp, 0)      AS xp,
               s.stamina,
-              s.stamina_updated_at
+              s.stamina_updated_at,
+              s.downed_until,
+              COALESCE(s.lifetime_downs, 0)      AS lifetime_downs,
+              COALESCE(s.max_level_reduction, 0) AS max_level_reduction,
+              COALESCE(s.confidence_restores, 0) AS confidence_restores
        FROM player_cards pc
        JOIN cat_cards cc ON cc.id = pc.card_id
        LEFT JOIN player_cat_stats s ON s.player_card_id = pc.id
@@ -167,7 +171,7 @@ const insertPartySlot = async (discordId, playerCardId, slot, executor = pool) =
  */
 const grantXp = async (cat, addXp, executor = pool) => {
   try {
-    const cap = rpgStats.levelCap(cat.rarity);
+    const cap = rpgStats.effectiveLevelCap(cat.rarity, cat.maxLevelReduction || 0, cat.level);
     const currentTotal = rpgStats.cumulativeXpToReach(cat.level) + cat.xp;
     const { level, xp } = rpgStats.resolveLevelFromTotalXp(currentTotal + addXp, cap);
     await setLevelXp(cat.playerCardId, cat.discordId, cat.cardId, level, xp, executor);
@@ -176,6 +180,92 @@ const grantXp = async (cat, addXp, executor = pool) => {
     logger.error('Error granting XP', { error: error.message, playerCardId: cat.playerCardId });
     throw new InternalError('Failed to grant XP');
   }
+};
+
+// ========== Combat stakes (Downed / revive / confidence) ==========
+
+/** One cat with the fields the revive/restore handlers need. */
+const getCatForAction = async (playerCardId, discordId, executor = pool) => {
+  const r = await executor.query(
+    `SELECT pc.id AS player_card_id, pc.card_id, cc.rarity, cc.cat_name,
+            COALESCE(s.level, 1) AS level, s.downed_until,
+            COALESCE(s.lifetime_downs, 0)      AS lifetime_downs,
+            COALESCE(s.max_level_reduction, 0) AS max_level_reduction,
+            COALESCE(s.confidence_restores, 0) AS confidence_restores
+     FROM player_cards pc
+     JOIN cat_cards cc ON cc.id = pc.card_id
+     LEFT JOIN player_cat_stats s ON s.player_card_id = pc.id
+     WHERE pc.id = $1 AND pc.discord_id = $2`,
+    [playerCardId, discordId]
+  );
+  return r.rows[0] || null;
+};
+
+/**
+ * Mark a cat Downed after a lost fight. Bumps lifetime + today's down counts,
+ * sets the natural-rest timer (lifetimeDowns × 30, capped), and applies the
+ * gated confidence penalty (−1 max level on exactly the 2nd down of the day,
+ * capped + floored). Returns what happened for the response/UI.
+ */
+const applyDown = async (cat, executor = pool) => {
+  await ensureStatRow(cat.discordId, cat.cardId, cat.playerCardId, executor);
+  const cur = (await executor.query(
+    `SELECT level, lifetime_downs, downs_today, downs_today_date, max_level_reduction
+     FROM player_cat_stats WHERE player_card_id = $1 FOR UPDATE`,
+    [cat.playerCardId]
+  )).rows[0];
+
+  const today = new Date().toISOString().slice(0, 10);
+  const curDate = cur.downs_today_date ? new Date(cur.downs_today_date).toISOString().slice(0, 10) : null;
+  const lifetimeDowns = (cur.lifetime_downs || 0) + 1;
+  const downsToday = (curDate === today ? (cur.downs_today || 0) : 0) + 1;
+  const restMinutes = rpgStats.restMinutesForDowns(lifetimeDowns);
+
+  let reduction = cur.max_level_reduction || 0;
+  let confidenceDropped = false;
+  if (downsToday === 2 && reduction < rpgStats.MAX_LEVEL_REDUCTION_CAP) {
+    const base = rpgStats.levelCap(cat.rarity);
+    const wouldBeCap = base - (reduction + 1);
+    // Floor: the reduced cap can never drop below the cat's current level or 10.
+    if (wouldBeCap >= Math.max(cur.level || 1, rpgStats.LEVEL_REDUCTION_FLOOR)) {
+      reduction += 1;
+      confidenceDropped = true;
+    }
+  }
+
+  await executor.query(
+    `UPDATE player_cat_stats SET
+       downed_until = NOW() + ($2 * INTERVAL '1 minute'),
+       lifetime_downs = $3, downs_today = $4, downs_today_date = $5::date,
+       max_level_reduction = $6, updated_at = NOW()
+     WHERE player_card_id = $1`,
+    [cat.playerCardId, restMinutes, lifetimeDowns, downsToday, today, reduction]
+  );
+  return { playerCardId: cat.playerCardId, restMinutes, lifetimeDowns, confidenceDropped, maxLevelReduction: reduction };
+};
+
+/** Clear a cat's Downed state (after a catnip/token revive). */
+const reviveCat = async (playerCardId, discordId, executor = pool) => {
+  const r = await executor.query(
+    `UPDATE player_cat_stats SET downed_until = NULL, updated_at = NOW()
+     WHERE player_card_id = $1 AND discord_id = $2`,
+    [playerCardId, discordId]
+  );
+  return r.rowCount === 1;
+};
+
+/** Restore +1 max level (Confidence Treat); bumps the restore counter for cost escalation. */
+const restoreConfidence = async (playerCardId, discordId, executor = pool) => {
+  const r = await executor.query(
+    `UPDATE player_cat_stats
+       SET max_level_reduction = GREATEST(0, max_level_reduction - 1),
+           confidence_restores = confidence_restores + 1,
+           updated_at = NOW()
+     WHERE player_card_id = $1 AND discord_id = $2
+     RETURNING max_level_reduction`,
+    [playerCardId, discordId]
+  );
+  return r.rows[0] ? r.rows[0].max_level_reduction : null;
 };
 
 // ========== Story ==========
@@ -461,6 +551,10 @@ module.exports = {
   clearParty,
   insertPartySlot,
   grantXp,
+  getCatForAction,
+  applyDown,
+  reviveCat,
+  restoreConfidence,
   getStoryProgress,
   setStoryProgress,
   getStoryClaims,

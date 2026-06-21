@@ -82,6 +82,39 @@ describe('rpgStats.regenStamina', () => {
   });
 });
 
+describe('rpgStats combat stakes', () => {
+  test('restMinutesForDowns scales by 30/down, capped at 180', () => {
+    expect(rpgStats.restMinutesForDowns(1)).toBe(30);
+    expect(rpgStats.restMinutesForDowns(3)).toBe(90);
+    expect(rpgStats.restMinutesForDowns(6)).toBe(180);
+    expect(rpgStats.restMinutesForDowns(50)).toBe(180); // cap
+  });
+
+  test('reviveCost = min(120, 20 + 20*lifetimeDowns)', () => {
+    expect(rpgStats.reviveCost(1)).toBe(40);
+    expect(rpgStats.reviveCost(2)).toBe(60);
+    expect(rpgStats.reviveCost(5)).toBe(120);
+    expect(rpgStats.reviveCost(99)).toBe(120); // cap
+  });
+
+  test('confidenceTreatCost escalates 100 per prior restore', () => {
+    expect(rpgStats.confidenceTreatCost(0)).toBe(100);
+    expect(rpgStats.confidenceTreatCost(1)).toBe(200);
+    expect(rpgStats.confidenceTreatCost(3)).toBe(400);
+  });
+
+  test('effectiveLevelCap subtracts reduction but never below current level or 10', () => {
+    // epic base cap 35
+    expect(rpgStats.effectiveLevelCap('epic', 0, 1)).toBe(35);
+    expect(rpgStats.effectiveLevelCap('epic', 3, 1)).toBe(32);
+    // floor at current level: a L34 cat can't be capped below 34
+    expect(rpgStats.effectiveLevelCap('epic', 5, 34)).toBe(34);
+    // hard floor of 10 for a heavily-reduced low cap
+    expect(rpgStats.effectiveLevelCap('common', 5, 1)).toBe(15); // common base 20 - 5
+    expect(rpgStats.effectiveLevelCap('common', 20, 1)).toBe(10); // floor
+  });
+});
+
 describe('rpgStats.roleFor / levelCap', () => {
   test('maps buff_type to role', () => {
     expect(rpgStats.roleFor('click').role).toBe('Striker');

@@ -6,6 +6,7 @@ const { setPartySchema, startCombatSchema, acceptDispatchSchema } = require('../
 const {
   getCats, getParty, setParty, startCombat, getStory,
   getDispatch, acceptDispatch, collectDispatch, getDaily, claimDaily,
+  reviveCat, restoreConfidence,
 } = require('../controllers/rpg.controller');
 
 const router = express.Router();
@@ -33,5 +34,9 @@ router.post('/dispatch/:id/collect', authenticate, apiLimiter, collectDispatch);
 // Daily cat quests
 router.get('/daily', authenticate, apiLimiter, getDaily);
 router.post('/daily/:id/claim', authenticate, apiLimiter, claimDaily);
+
+// Combat stakes — revive a downed cat (catnip) / restore lost confidence
+router.post('/cats/:id/revive', authenticate, apiLimiter, reviveCat);
+router.post('/cats/:id/restore-confidence', authenticate, apiLimiter, restoreConfidence);
 
 module.exports = router;
