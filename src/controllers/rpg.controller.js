@@ -106,11 +106,16 @@ const getCats = async (req, res, next) => {
     let rows = await rpgModel.getCatRows(discordId);
     rows = await grantStarterGiftIfNeeded(discordId, rows);
 
-    const cats = rows.map(r => shapeCat(r, isMember));
-    const [partySlots, totalLevels] = await Promise.all([
+    const [partySlots, totalLevels, busy] = await Promise.all([
       rpgModel.getPartySlots(discordId),
       rpgModel.getTotalCatLevels(discordId),
+      rpgModel.getBusyCardIds(discordId),
     ]);
+    const cats = rows.map(r => {
+      const c = shapeCat(r, isMember);
+      c.dispatched = busy.has(r.player_card_id); // out on a mission — unavailable for party/combat
+      return c;
+    });
 
     const party = [null, null, null, null];
     for (const { slot, player_card_id } of partySlots) party[slot] = player_card_id;
@@ -186,12 +191,14 @@ const setParty = async (req, res, next) => {
  * Build combat-ready party combatants from the player's active slots.
  * Returns [] if the party is empty.
  */
-function buildPartyCombatants(rows, partySlots, discordId, now = Date.now()) {
+function buildPartyCombatants(rows, partySlots, discordId, now = Date.now(), busySet = new Set()) {
   const bySlot = [];
   const rowById = new Map(rows.map(r => [r.player_card_id, r]));
   for (const { slot, player_card_id } of partySlots) {
     const row = rowById.get(player_card_id);
     if (!row) continue;
+    // Cats out on a dispatch can't also fight.
+    if (busySet.has(player_card_id)) continue;
     // Downed cats are recovering — they sit out the fight.
     const downedUntil = row.downed_until ? new Date(row.downed_until).getTime() : null;
     if (downedUntil && downedUntil > now) continue;
@@ -228,12 +235,13 @@ const startCombat = async (req, res, next) => {
     const node = storyCatalog.getNode(encounterId);
     if (!node) throw new ValidationError('Unknown encounter');
 
-    const [rows, partySlots] = await Promise.all([
+    const [rows, partySlots, busy] = await Promise.all([
       rpgModel.getCatRows(discordId),
       rpgModel.getPartySlots(discordId),
+      rpgModel.getBusyCardIds(discordId),
     ]);
-    const party = buildPartyCombatants(rows, partySlots, discordId);
-    if (party.length === 0) throw new ValidationError('Your party has no available cats — they may be recovering. Add or revive cats before fighting.');
+    const party = buildPartyCombatants(rows, partySlots, discordId, Date.now(), busy);
+    if (party.length === 0) throw new ValidationError('Your party has no available cats — they may be recovering or on a dispatch. Add or revive cats before fighting.');
 
     const seed = Math.floor(Math.random() * 0x7fffffff);
     const battle = simulateBattle(party, node.enemies, seed);
@@ -639,13 +647,26 @@ const getEncounterPreview = async (req, res, next) => {
     const node = storyCatalog.getNode(req.params.nodeId);
     if (!node) throw new ValidationError('Unknown encounter');
 
-    const [rows, partySlots] = await Promise.all([
+    const [rows, partySlots, busy] = await Promise.all([
       rpgModel.getCatRows(discordId),
       rpgModel.getPartySlots(discordId),
+      rpgModel.getBusyCardIds(discordId),
     ]);
-    const party = buildPartyCombatants(rows, partySlots, discordId);
+    const party = buildPartyCombatants(rows, partySlots, discordId, Date.now(), busy);
     const partyPower = party.reduce((s, p) => s + rpgStats.combatPower(p.stats), 0);
     const enemyPower = node.enemies.reduce((s, e) => s + rpgStats.combatPower(e.stats), 0);
+
+    // Real win chance: the enemy roster is deterministic, so Monte-Carlo the
+    // actual fight over random seeds. The sim is fast (pure JS, <60 turns), so
+    // ~80 runs is trivial and gives an honest win rate (not a guess).
+    const SIMS = 80;
+    let wins = 0;
+    if (party.length > 0) {
+      for (let i = 0; i < SIMS; i++) {
+        if (simulateBattle(party, node.enemies, Math.floor(Math.random() * 0x7fffffff)).result === 'win') wins++;
+      }
+    }
+    const winChance = party.length > 0 ? Math.round((wins / SIMS) * 100) : null;
 
     res.json({
       success: true,
@@ -656,6 +677,7 @@ const getEncounterPreview = async (req, res, next) => {
       partyPower,
       enemyPower,
       recommendedPower: Math.round(enemyPower),
+      winChance,
       threat: rpgStats.threatFor(partyPower, enemyPower),
       partyCats: party.map(p => p.name),
       partySize: party.length,
