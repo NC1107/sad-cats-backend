@@ -103,6 +103,24 @@ describe('rpgStats combat stakes', () => {
     expect(rpgStats.confidenceTreatCost(3)).toBe(400);
   });
 
+  test('combatPower is ATK-weighted and additive', () => {
+    const weak = rpgStats.combatPower({ hp: 50, atk: 5, def: 2, spd: 5, crit: 0 });
+    const strong = rpgStats.combatPower({ hp: 300, atk: 80, def: 40, spd: 30, crit: 15 });
+    expect(strong).toBeGreaterThan(weak);
+    expect(rpgStats.combatPower(null)).toBe(0);
+  });
+
+  test('threatFor maps power ratio to the right tier + confirm gate', () => {
+    expect(rpgStats.threatFor(150, 100).tier).toBe('safe');    // 1.5
+    expect(rpgStats.threatFor(110, 100).tier).toBe('fair');    // 1.1
+    expect(rpgStats.threatFor(80, 100).tier).toBe('risky');    // 0.8
+    expect(rpgStats.threatFor(50, 100).tier).toBe('deadly');   // 0.5
+    expect(rpgStats.threatFor(50, 100).confirm).toBe('always');
+    expect(rpgStats.threatFor(80, 100).confirm).toBe('first');
+    expect(rpgStats.threatFor(150, 100).confirm).toBe('never');
+    expect(rpgStats.threatFor(100, 0).tier).toBe('safe');      // no enemies → safe
+  });
+
   test('effectiveLevelCap subtracts reduction but never below current level or 10', () => {
     // epic base cap 35
     expect(rpgStats.effectiveLevelCap('epic', 0, 1)).toBe(35);

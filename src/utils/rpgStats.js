@@ -162,6 +162,31 @@ function effectiveLevelCap(rarity, reduction = 0, currentLevel = 1) {
   return Math.max(LEVEL_REDUCTION_FLOOR, currentLevel, levelCap(rarity) - (reduction || 0));
 }
 
+// ---- Threat telegraph (pre-fight risk readout) ----
+/** Single-combatant power (ATK-weighted) for comparing party vs encounter. */
+function combatPower(stats) {
+  if (!stats) return 0;
+  return Math.round(
+    (stats.hp || 0) * 0.4 + (stats.atk || 0) * 6 + (stats.def || 0) * 3 +
+    (stats.spd || 0) * 2 + (stats.crit || 0) * 2
+  );
+}
+
+// Tiers by partyPower / enemyPower ratio. `dots` = 5-dot band fill; `confirm`
+// = when the UI should gate the Fight button.
+const THREAT_TIERS = [
+  { tier: 'safe',   minRatio: 1.25, dots: 1, confirm: 'never' },
+  { tier: 'fair',   minRatio: 0.95, dots: 2, confirm: 'never' },
+  { tier: 'risky',  minRatio: 0.70, dots: 3, confirm: 'first' },
+  { tier: 'deadly', minRatio: 0,    dots: 5, confirm: 'always' },
+];
+
+function threatFor(partyPower, enemyPower) {
+  const ratio = enemyPower > 0 ? partyPower / enemyPower : 99;
+  const t = THREAT_TIERS.find(x => ratio >= x.minRatio) || THREAT_TIERS[THREAT_TIERS.length - 1];
+  return { tier: t.tier, dots: t.dots, confirm: t.confirm, ratio: Math.round(ratio * 100) / 100 };
+}
+
 function roleFor(buffType) {
   return ROLES[buffType] || ROLES.all;
 }
@@ -208,6 +233,8 @@ module.exports = {
   restMinutesForDowns,
   reviveCost,
   confidenceTreatCost,
+  combatPower,
+  threatFor,
   MAX_LEVEL_REDUCTION_CAP,
   LEVEL_REDUCTION_FLOOR,
   roleFor,

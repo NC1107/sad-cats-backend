@@ -295,6 +295,18 @@ const startCombat = async (req, res, next) => {
       });
     }
 
+    // Plain-language "why" on a loss, so it's learnable not random.
+    let verdict = null;
+    if (battle.result === 'loss') {
+      const pPow = party.reduce((s, p) => s + rpgStats.combatPower(p.stats), 0);
+      const ePow = node.enemies.reduce((s, e) => s + rpgStats.combatPower(e.stats), 0);
+      const pSpd = party.reduce((s, p) => s + (p.stats.spd || 0), 0) / Math.max(1, party.length);
+      const eSpd = node.enemies.reduce((s, e) => s + (e.stats.spd || 0), 0) / Math.max(1, node.enemies.length);
+      if (eSpd > pSpd * 1.2) verdict = 'Out-sped — a faster cat would swing this.';
+      else if (ePow > pPow * 1.3) verdict = 'Out-gunned — level up or bring stronger cats.';
+      else verdict = 'A close loss — swap a cat or try again.';
+    }
+
     await rpgModel.insertCombatSession({
       discordId,
       encounterId,
@@ -318,6 +330,7 @@ const startCombat = async (req, res, next) => {
       rewardsGranted: isFirstClear,
       rewards,
       downs, // [{ playerCardId, restMinutes, confidenceDropped, maxLevelReduction }] on a loss
+      verdict, // plain-language loss reason, null on a win
     });
   } catch (error) {
     next(error);
@@ -614,11 +627,50 @@ const restoreConfidence = async (req, res, next) => {
   }
 };
 
+/**
+ * GET /api/rpg/encounter/:nodeId/preview
+ * Pre-fight threat readout (the fairness telegraph): party vs encounter power,
+ * a Safe→Deadly tier, recommended power, and the cats at risk. Uses the same
+ * stat math the fight uses, so it can't mislead.
+ */
+const getEncounterPreview = async (req, res, next) => {
+  try {
+    const discordId = req.user.data.discordId;
+    const node = storyCatalog.getNode(req.params.nodeId);
+    if (!node) throw new ValidationError('Unknown encounter');
+
+    const [rows, partySlots] = await Promise.all([
+      rpgModel.getCatRows(discordId),
+      rpgModel.getPartySlots(discordId),
+    ]);
+    const party = buildPartyCombatants(rows, partySlots, discordId);
+    const partyPower = party.reduce((s, p) => s + rpgStats.combatPower(p.stats), 0);
+    const enemyPower = node.enemies.reduce((s, e) => s + rpgStats.combatPower(e.stats), 0);
+
+    res.json({
+      success: true,
+      nodeId: node.id,
+      districtName: node.districtName,
+      elite: node.elite,
+      tier: node.tier,
+      partyPower,
+      enemyPower,
+      recommendedPower: Math.round(enemyPower),
+      threat: rpgStats.threatFor(partyPower, enemyPower),
+      partyCats: party.map(p => p.name),
+      partySize: party.length,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   getCats,
   getParty,
   setParty,
   startCombat,
+  getEncounterPreview,
   getStory,
   getDispatch,
   acceptDispatch,

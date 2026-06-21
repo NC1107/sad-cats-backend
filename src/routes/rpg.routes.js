@@ -4,7 +4,7 @@ const { apiLimiter } = require('../middleware/rateLimiter');
 const { validateRequest } = require('../middleware/validateRequest');
 const { setPartySchema, startCombatSchema, acceptDispatchSchema } = require('../validators/rpg.validator');
 const {
-  getCats, getParty, setParty, startCombat, getStory,
+  getCats, getParty, setParty, startCombat, getEncounterPreview, getStory,
   getDispatch, acceptDispatch, collectDispatch, getDaily, claimDaily,
   reviveCat, restoreConfidence,
 } = require('../controllers/rpg.controller');
@@ -22,6 +22,9 @@ router.put('/party', authenticate, apiLimiter, validateRequest(setPartySchema), 
 
 // Story node map + this player's progress
 router.get('/story', authenticate, apiLimiter, getStory);
+
+// Pre-fight threat readout (fairness telegraph)
+router.get('/encounter/:nodeId/preview', authenticate, apiLimiter, getEncounterPreview);
 
 // Resolve a turn-based fight server-side (rewards on first clear)
 router.post('/combat/start', authenticate, apiLimiter, validateRequest(startCombatSchema), startCombat);
