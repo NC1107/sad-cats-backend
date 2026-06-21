@@ -23,9 +23,13 @@ function utcDayInfo(now = new Date()) {
  * Shape one DB cat row into the API contract: derived stats, role, xp-to-next,
  * level cap, and lazily-regenerated stamina.
  */
-function shapeCat(row, isMember) {
+function shapeCat(row, isMember, now = Date.now()) {
   const level = Number(row.level) || 1;
   const role = rpgStats.roleFor(row.buff_type);
+  const maxLevelReduction = Number(row.max_level_reduction) || 0;
+  const lifetimeDowns = Number(row.lifetime_downs) || 0;
+  const downedUntil = row.downed_until ? new Date(row.downed_until).getTime() : null;
+  const downed = downedUntil != null && downedUntil > now;
   // Stamina is null until the cat's stat row exists; treat as full pool.
   let stamina = rpgStats.staminaCap(isMember);
   if (row.stamina != null && row.stamina_updated_at) {
@@ -43,7 +47,12 @@ function shapeCat(row, isMember) {
     level,
     xp: Number(row.xp) || 0,
     xpToNext: rpgStats.xpToNext(level),
-    levelCap: rpgStats.levelCap(row.rarity),
+    levelCap: rpgStats.effectiveLevelCap(row.rarity, maxLevelReduction, level),
+    maxLevelReduction,
+    lifetimeDowns,
+    downed,
+    downedUntil: downed ? downedUntil : null,
+    reviveCost: rpgStats.reviveCost(lifetimeDowns),
     stamina,
     staminaCap: rpgStats.staminaCap(isMember),
     role: role.role,
@@ -177,12 +186,15 @@ const setParty = async (req, res, next) => {
  * Build combat-ready party combatants from the player's active slots.
  * Returns [] if the party is empty.
  */
-function buildPartyCombatants(rows, partySlots, discordId) {
+function buildPartyCombatants(rows, partySlots, discordId, now = Date.now()) {
   const bySlot = [];
   const rowById = new Map(rows.map(r => [r.player_card_id, r]));
   for (const { slot, player_card_id } of partySlots) {
     const row = rowById.get(player_card_id);
     if (!row) continue;
+    // Downed cats are recovering — they sit out the fight.
+    const downedUntil = row.downed_until ? new Date(row.downed_until).getTime() : null;
+    if (downedUntil && downedUntil > now) continue;
     const level = Number(row.level) || 1;
     bySlot[slot] = {
       playerCardId: row.player_card_id,
@@ -194,6 +206,7 @@ function buildPartyCombatants(rows, partySlots, discordId) {
       buffValue: Number(row.buff_value) || 0,
       level,
       xp: Number(row.xp) || 0,
+      maxLevelReduction: Number(row.max_level_reduction) || 0,
       stats: rpgStats.deriveStats(row, level),
     };
   }
@@ -220,7 +233,7 @@ const startCombat = async (req, res, next) => {
       rpgModel.getPartySlots(discordId),
     ]);
     const party = buildPartyCombatants(rows, partySlots, discordId);
-    if (party.length === 0) throw new ValidationError('Your party is empty — add cats before fighting');
+    if (party.length === 0) throw new ValidationError('Your party has no available cats — they may be recovering. Add or revive cats before fighting.');
 
     const seed = Math.floor(Math.random() * 0x7fffffff);
     const battle = simulateBattle(party, node.enemies, seed);
@@ -264,6 +277,24 @@ const startCombat = async (req, res, next) => {
       });
     }
 
+    // On a LOSS, cats that ended at 0 HP get Downed (wins forgive). Each down bumps
+    // the rest timer and, on the 2nd down of the day, the confidence penalty.
+    let downs = [];
+    if (battle.result === 'loss' && battle.downedIds && battle.downedIds.length) {
+      const byId = new Map(party.map(p => [p.playerCardId, p]));
+      downs = await withTransaction(async (client) => {
+        const out = [];
+        for (const id of battle.downedIds) {
+          const p = byId.get(id);
+          if (!p) continue;
+          out.push(await rpgModel.applyDown(
+            { playerCardId: id, discordId, cardId: p.cardId, rarity: p.rarity, level: p.level }, client
+          ));
+        }
+        return out;
+      });
+    }
+
     await rpgModel.insertCombatSession({
       discordId,
       encounterId,
@@ -271,7 +302,7 @@ const startCombat = async (req, res, next) => {
       seed,
       result: battle.result,
       turns: battle.turns,
-      xpGranted: rewards.xpEach * (rewards.leveledUp.length || 0),
+      xpGranted: rewards.xpEach * (battle.survivors ? battle.survivors.length : 0),
       catnipGranted: rewards.catnip,
     });
 
@@ -281,10 +312,12 @@ const startCombat = async (req, res, next) => {
       turns: battle.turns,
       log: battle.log,
       survivors: battle.survivors,
+      downedIds: battle.downedIds,
       combatants: battle.combatants,
       encounter: { id: node.id, districtName: node.districtName, tier: node.tier, elite: node.elite },
       rewardsGranted: isFirstClear,
       rewards,
+      downs, // [{ playerCardId, restMinutes, confidenceDropped, maxLevelReduction }] on a loss
     });
   } catch (error) {
     next(error);
@@ -379,10 +412,18 @@ const acceptDispatch = async (req, res, next) => {
     const busy = await rpgModel.getBusyCardIds(discordId);
     if (ids.some(id => busy.has(id))) throw new ValidationError('One of those cats is already on a mission');
 
+    // Load the selected cats once — used for the downed check and the stat check.
+    const rows = await rpgModel.getCatRows(discordId);
+    const byId = new Map(rows.map(r => [r.player_card_id, r]));
+    const now = Date.now();
+    const isDowned = id => {
+      const du = byId.get(id)?.downed_until ? new Date(byId.get(id).downed_until).getTime() : null;
+      return du && du > now;
+    };
+    if (ids.some(isDowned)) throw new ValidationError('One of those cats is recovering (downed) and cannot be dispatched');
+
     // Combined stat check (sum of the derived stat across the selected cats).
     if (tier.statCheck) {
-      const rows = await rpgModel.getCatRows(discordId);
-      const byId = new Map(rows.map(r => [r.player_card_id, r]));
       let total = 0;
       for (const id of ids) {
         const row = byId.get(id);
@@ -428,7 +469,7 @@ const collectDispatch = async (req, res, next) => {
       for (const id of cardIds) {
         const row = byId.get(id);
         if (!row) continue;
-        const cat = { playerCardId: id, discordId, cardId: row.card_id, rarity: row.rarity, level: Number(row.level) || 1, xp: Number(row.xp) || 0 };
+        const cat = { playerCardId: id, discordId, cardId: row.card_id, rarity: row.rarity, level: Number(row.level) || 1, xp: Number(row.xp) || 0, maxLevelReduction: Number(row.max_level_reduction) || 0 };
         const r = await rpgModel.grantXp(cat, xpEach, client);
         if (r.leveledUp) leveledUp.push({ playerCardId: id, level: r.level });
       }
@@ -517,6 +558,62 @@ const claimDaily = async (req, res, next) => {
   }
 };
 
+/**
+ * POST /api/rpg/cats/:id/revive
+ * Instantly clear a cat's Downed state for catnip (cost scales with lifetime downs).
+ */
+const reviveCat = async (req, res, next) => {
+  try {
+    const discordId = req.user.data.discordId;
+    const playerCardId = req.params.id;
+    const result = await withTransaction(async (client) => {
+      const cat = await rpgModel.getCatForAction(playerCardId, discordId, client);
+      if (!cat) throw new NotFoundError('Cat not found');
+      const downedUntil = cat.downed_until ? new Date(cat.downed_until).getTime() : null;
+      if (!downedUntil || downedUntil <= Date.now()) throw new ValidationError('That cat is not downed');
+      const cost = rpgStats.reviveCost(Number(cat.lifetime_downs) || 0);
+      const remaining = await cardModel.spendCatnip(discordId, cost, client);
+      if (remaining === null) {
+        const bal = await cardModel.getCatnip(discordId, client);
+        throw new ValidationError(`Not enough catnip — revive costs ${cost}, you have ${bal}`);
+      }
+      await rpgModel.reviveCat(playerCardId, discordId, client);
+      return { cost, catnipBalance: remaining };
+    });
+    res.json({ success: true, ...result });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * POST /api/rpg/cats/:id/restore-confidence
+ * "Confidence Treat" — spend catnip to restore +1 max level on a cat reduced by
+ * the down penalty (cost escalates per restore).
+ */
+const restoreConfidence = async (req, res, next) => {
+  try {
+    const discordId = req.user.data.discordId;
+    const playerCardId = req.params.id;
+    const result = await withTransaction(async (client) => {
+      const cat = await rpgModel.getCatForAction(playerCardId, discordId, client);
+      if (!cat) throw new NotFoundError('Cat not found');
+      if ((Number(cat.max_level_reduction) || 0) <= 0) throw new ValidationError('That cat has no lost confidence to restore');
+      const cost = rpgStats.confidenceTreatCost(Number(cat.confidence_restores) || 0);
+      const remaining = await cardModel.spendCatnip(discordId, cost, client);
+      if (remaining === null) {
+        const bal = await cardModel.getCatnip(discordId, client);
+        throw new ValidationError(`Not enough catnip — a Confidence Treat costs ${cost}, you have ${bal}`);
+      }
+      const newReduction = await rpgModel.restoreConfidence(playerCardId, discordId, client);
+      return { cost, catnipBalance: remaining, maxLevelReduction: newReduction };
+    });
+    res.json({ success: true, ...result });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   getCats,
   getParty,
@@ -528,4 +625,6 @@ module.exports = {
   collectDispatch,
   getDaily,
   claimDaily,
+  reviveCat,
+  restoreConfidence,
 };

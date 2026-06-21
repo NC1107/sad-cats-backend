@@ -116,6 +116,11 @@ function simulateBattle(party, enemies, seed) {
   const survivors = actors
     .filter(a => a.side === 'party' && alive(a))
     .map(a => a.id);
+  // Party cats at 0 HP when the fight ended. On a LOSS these become Downed; on a
+  // WIN they're forgiven (the controller only acts on a loss).
+  const downedIds = actors
+    .filter(a => a.side === 'party' && !alive(a))
+    .map(a => a.id);
 
   // Roster for client-side playback (maxHp is unchanged by the sim; the client
   // replays the log to drain HP from these starting values).
@@ -128,7 +133,7 @@ function simulateBattle(party, enemies, seed) {
     maxHp: a.maxHp,
   }));
 
-  return { result, turns, log, survivors, combatants };
+  return { result, turns, log, survivors, downedIds, combatants };
 }
 
 function takeTurn(actor, actors, rng, emit) {

@@ -133,6 +133,35 @@ function levelCap(rarity) {
   return LEVEL_CAPS[rarity] || LEVEL_CAPS.common;
 }
 
+// ---- Combat stakes (see COMBAT_STAKES_V1.md) ----
+const DOWN_REST_PER_MIN = 30;      // rest minutes per lifetime down
+const DOWN_REST_CAP_MIN = 180;     // hard cap on the natural-rest timer
+const MAX_LEVEL_REDUCTION_CAP = 5; // most a cat can lose from the confidence penalty
+const LEVEL_REDUCTION_FLOOR = 10;  // reduced cap never drops below this
+
+/** Natural-rest minutes for a downed cat: lifetimeDowns × 30, capped at 180. */
+function restMinutesForDowns(lifetimeDowns) {
+  return Math.min(DOWN_REST_CAP_MIN, Math.max(1, lifetimeDowns) * DOWN_REST_PER_MIN);
+}
+
+/** Catnip cost to instantly revive: min(120, 20 + 20 × lifetimeDowns). */
+function reviveCost(lifetimeDowns) {
+  return Math.min(120, 20 + 20 * Math.max(1, lifetimeDowns));
+}
+
+/** Catnip cost of a Confidence Treat (+1 max level): 100 × (restores + 1). */
+function confidenceTreatCost(restores) {
+  return 100 * ((restores || 0) + 1);
+}
+
+/**
+ * A cat's effective level cap after the confidence penalty. Never below the
+ * cat's current level (earned levels are never lost) or a hard floor of 10.
+ */
+function effectiveLevelCap(rarity, reduction = 0, currentLevel = 1) {
+  return Math.max(LEVEL_REDUCTION_FLOOR, currentLevel, levelCap(rarity) - (reduction || 0));
+}
+
 function roleFor(buffType) {
   return ROLES[buffType] || ROLES.all;
 }
@@ -175,6 +204,12 @@ module.exports = {
   cumulativeXpToReach,
   resolveLevelFromTotalXp,
   levelCap,
+  effectiveLevelCap,
+  restMinutesForDowns,
+  reviveCost,
+  confidenceTreatCost,
+  MAX_LEVEL_REDUCTION_CAP,
+  LEVEL_REDUCTION_FLOOR,
   roleFor,
   staminaCap,
   regenStamina,
