@@ -1047,6 +1047,27 @@ const adminGiveCard = async (req, res, next) => {
   } catch (error) { next(error); }
 };
 
+// Give one of every catalog card the user doesn't already own — testing convenience.
+const adminGiveAllCards = async (req, res, next) => {
+  try {
+    const discordId = requireValidDiscordId(req, res);
+    if (discordId === null) return;
+    const [all, owned] = await Promise.all([
+      cardModel.getAllCards(),
+      cardModel.getPlayerCardIds(discordId),
+    ]);
+    let given = 0;
+    for (const card of all) {
+      if (!owned.has(card.id)) {
+        await cardModel.insertPlayerCard(discordId, card.id, 'admin', false);
+        given++;
+      }
+    }
+    logger.info('Admin gave all cards', { discordId, given, total: all.length, adminId: req.user?.data?.discordId });
+    res.json({ success: true, given, total: all.length });
+  } catch (error) { next(error); }
+};
+
 const adminGiveCatnip = async (req, res, next) => {
   try {
     const discordId = requireValidDiscordId(req, res);
@@ -1240,6 +1261,7 @@ module.exports = {
   getUserInventory,
   adminGiveToys,
   adminGiveCard,
+  adminGiveAllCards,
   adminGiveCatnip,
   adminRemoveToy,
   adminRemoveCard,

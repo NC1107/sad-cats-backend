@@ -157,7 +157,7 @@ const getTopScores = async (limit = 50, offset = 0) => {
         updated_at
       FROM scores
       WHERE score > 0
-        AND COALESCE((game_state->>'totalClicks')::int, 0) > 0
+        AND COALESCE((game_state->>'totalClicks')::bigint, 0) > 0
         AND discord_id != '000000000000000001'
       ORDER BY score DESC,
         COALESCE((game_state->>'ascensionLevel')::int, 0) DESC,
@@ -286,7 +286,7 @@ const getTopScoresByPeriod = async (period = 'all', limit = 50, offset = 0) => {
         updated_at
       FROM scores
       WHERE score > 0
-        AND COALESCE((game_state->>'totalClicks')::int, 0) > 0
+        AND COALESCE((game_state->>'totalClicks')::bigint, 0) > 0
         AND discord_id != '000000000000000001'
         ${timeFilter}
       ORDER BY score DESC,
