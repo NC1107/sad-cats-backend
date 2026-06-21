@@ -5,6 +5,8 @@ const { redisClient } = require('../config/redis');
 const logger = require('../utils/logger');
 const { ADMIN_IDS } = require('../middleware/admin');
 const BossModel = require('../models/boss.model');
+const rpgModel = require('../models/rpg.model');
+const { withTransaction } = require('../config/database');
 const { distributeToys, getDefeatedBossCount } = BossModel;
 const { SCORE_CAP } = require('../models/score.model');
 const { computeTrustFactor } = require('../services/trust.service');
@@ -234,7 +236,9 @@ const createSnapshot = async (req, res, next) => {
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const safeName = (label || 'snap').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 32);
     const filename = `${discordId}_${safeName}_${timestamp}.json`;
-    fs.writeFileSync(path.join(backupDir, filename), JSON.stringify(current.rows[0], null, 2));
+    // Include the cat tables so a snapshot is a complete save (restore brings cats back too).
+    const snapshotObj = { ...current.rows[0], cats: await rpgModel.snapshotCats(discordId) };
+    fs.writeFileSync(path.join(backupDir, filename), JSON.stringify(snapshotObj, null, 2));
 
     const adminId = getActorId(req);
     logger.info('Admin created snapshot', { adminId, targetId: discordId, filename });
@@ -289,10 +293,16 @@ const restoreSnapshot = async (req, res, next) => {
     const newVersion = Math.max((snap.game_state?._adminVersion || 0) + 1, 99999);
     snap.game_state._adminVersion = newVersion;
 
-    await pool.query(
-      'UPDATE scores SET score = $1::NUMERIC, game_state = $2::jsonb, updated_at = NOW() WHERE discord_id = $3',
-      [snap.score, JSON.stringify(snap.game_state), discordId]
-    );
+    // Restore the idle save AND the cat tables. Only touch cats when the snapshot
+    // actually captured them — restoring a PRE-cats snapshot must not wipe the
+    // admin's current cats (restoreCats clears first, so guard on snap.cats).
+    await withTransaction(async (client) => {
+      await client.query(
+        'UPDATE scores SET score = $1::NUMERIC, game_state = $2::jsonb, updated_at = NOW() WHERE discord_id = $3',
+        [snap.score, JSON.stringify(snap.game_state), discordId]
+      );
+      if (snap.cats) await rpgModel.restoreCats(discordId, snap.cats, client);
+    });
 
     const adminId = getActorId(req);
     logger.info('Admin restored snapshot', { adminId, targetId: discordId, filename });
@@ -855,17 +865,24 @@ const loadDevPreset = async (req, res, next) => {
       if (!fs.existsSync(backupDir)) fs.mkdirSync(backupDir, { recursive: true });
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
       const filename = `${discordId}_pre-${preset}_${timestamp}.json`;
-      fs.writeFileSync(path.join(backupDir, filename), JSON.stringify(existing.rows[0], null, 2));
+      // Snapshot the cats too so switching presets is reversible (Restore brings them back).
+      const snapshotObj = { ...existing.rows[0], cats: await rpgModel.snapshotCats(discordId) };
+      fs.writeFileSync(path.join(backupDir, filename), JSON.stringify(snapshotObj, null, 2));
     }
 
     // Bump _adminVersion to invalidate stale client saves
     const currentVersion = existing.rows[0]?.game_state?._adminVersion || 0;
     const newState = { ...p.gameState, _adminVersion: currentVersion + 1 };
 
-    await pool.query(
-      `UPDATE scores SET score = $1::NUMERIC, game_state = $2, updated_at = NOW() WHERE discord_id = $3`,
-      [p.score, JSON.stringify(newState), discordId]
-    );
+    // Overwrite the idle save AND reset the cats so the preset is a clean slate
+    // matching the new save (the pre-preset snapshot above can restore them).
+    await withTransaction(async (client) => {
+      await client.query(
+        `UPDATE scores SET score = $1::NUMERIC, game_state = $2, updated_at = NOW() WHERE discord_id = $3`,
+        [p.score, JSON.stringify(newState), discordId]
+      );
+      await rpgModel.clearCats(discordId, client);
+    });
 
     logger.info('Admin loaded dev preset', { adminId, discordId, preset });
     res.json({ success: true, preset, label: p.label });
