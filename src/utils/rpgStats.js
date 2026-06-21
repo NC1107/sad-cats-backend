@@ -187,6 +187,26 @@ function threatFor(partyPower, enemyPower) {
   return { tier: t.tier, dots: t.dots, confirm: t.confirm, ratio: Math.round(ratio * 100) / 100 };
 }
 
+// ---- Combat attrition (persistent HP) ----
+const FULL_HEAL_MS = 15 * 60 * 1000; // a cat fully heals in 15 minutes
+
+/** Effective HP now: stored HP regenerated toward max since hp_updated_at. NULL stored = full. */
+function effectiveHp(storedHp, hpUpdatedAt, maxHp, now = Date.now()) {
+  if (storedHp == null) return maxHp;
+  const base = Math.min(maxHp, storedHp);
+  if (!hpUpdatedAt) return Math.max(1, base);
+  const elapsed = now - new Date(hpUpdatedAt).getTime();
+  const healed = Math.floor((elapsed / FULL_HEAL_MS) * maxHp);
+  return Math.max(1, Math.min(maxHp, base + healed));
+}
+
+/** Catnip cost to instantly full-heal one cat — scales with damage taken (cap 25). */
+function healCost(currentHp, maxHp) {
+  const missing = Math.max(0, maxHp - currentHp);
+  if (missing <= 0) return 0;
+  return Math.min(25, Math.max(1, Math.ceil((missing / maxHp) * 25)));
+}
+
 function roleFor(buffType) {
   return ROLES[buffType] || ROLES.all;
 }
@@ -235,6 +255,9 @@ module.exports = {
   confidenceTreatCost,
   combatPower,
   threatFor,
+  effectiveHp,
+  healCost,
+  FULL_HEAL_MS,
   MAX_LEVEL_REDUCTION_CAP,
   LEVEL_REDUCTION_FLOOR,
   roleFor,

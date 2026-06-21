@@ -23,6 +23,8 @@ const getCatRows = async (discordId, executor = pool) => {
               s.stamina,
               s.stamina_updated_at,
               s.downed_until,
+              s.current_hp,
+              s.hp_updated_at,
               COALESCE(s.lifetime_downs, 0)      AS lifetime_downs,
               COALESCE(s.max_level_reduction, 0) AS max_level_reduction,
               COALESCE(s.confidence_restores, 0) AS confidence_restores
@@ -187,8 +189,8 @@ const grantXp = async (cat, addXp, executor = pool) => {
 /** One cat with the fields the revive/restore handlers need. */
 const getCatForAction = async (playerCardId, discordId, executor = pool) => {
   const r = await executor.query(
-    `SELECT pc.id AS player_card_id, pc.card_id, cc.rarity, cc.cat_name,
-            COALESCE(s.level, 1) AS level, s.downed_until,
+    `SELECT pc.id AS player_card_id, pc.card_id, cc.rarity, cc.cat_name, cc.fun_stats,
+            COALESCE(s.level, 1) AS level, s.downed_until, s.current_hp, s.hp_updated_at,
             COALESCE(s.lifetime_downs, 0)      AS lifetime_downs,
             COALESCE(s.max_level_reduction, 0) AS max_level_reduction,
             COALESCE(s.confidence_restores, 0) AS confidence_restores
@@ -237,17 +239,41 @@ const applyDown = async (cat, executor = pool) => {
     `UPDATE player_cat_stats SET
        downed_until = NOW() + ($2 * INTERVAL '1 minute'),
        lifetime_downs = $3, downs_today = $4, downs_today_date = $5::date,
-       max_level_reduction = $6, updated_at = NOW()
+       max_level_reduction = $6,
+       current_hp = 0, hp_updated_at = NOW(),
+       updated_at = NOW()
      WHERE player_card_id = $1`,
     [cat.playerCardId, restMinutes, lifetimeDowns, downsToday, today, reduction]
   );
   return { playerCardId: cat.playerCardId, restMinutes, lifetimeDowns, confidenceDropped, maxLevelReduction: reduction };
 };
 
-/** Clear a cat's Downed state (after a catnip/token revive). */
+/** Clear a cat's Downed state and heal to full (after a catnip/token revive). */
 const reviveCat = async (playerCardId, discordId, executor = pool) => {
   const r = await executor.query(
-    `UPDATE player_cat_stats SET downed_until = NULL, updated_at = NOW()
+    `UPDATE player_cat_stats SET downed_until = NULL, current_hp = NULL, hp_updated_at = NULL, updated_at = NOW()
+     WHERE player_card_id = $1 AND discord_id = $2`,
+    [playerCardId, discordId]
+  );
+  return r.rowCount === 1;
+};
+
+/** Persist a cat's HP after a fight (NULL = full, so it stops regenerating). */
+const setCurrentHp = async (playerCardId, discordId, cardId, hp, maxHp, executor = pool) => {
+  const full = hp >= maxHp;
+  await executor.query(
+    `INSERT INTO player_cat_stats (player_card_id, discord_id, card_id, current_hp, hp_updated_at)
+     VALUES ($1, $2, $3, $4, $5)
+     ON CONFLICT (player_card_id)
+     DO UPDATE SET current_hp = $4, hp_updated_at = $5, updated_at = NOW()`,
+    [playerCardId, discordId, cardId, full ? null : Math.max(1, Math.round(hp)), full ? null : new Date()]
+  );
+};
+
+/** Full-heal a cat now (Rest / catnip heal). */
+const healCat = async (playerCardId, discordId, executor = pool) => {
+  const r = await executor.query(
+    `UPDATE player_cat_stats SET current_hp = NULL, hp_updated_at = NULL, updated_at = NOW()
      WHERE player_card_id = $1 AND discord_id = $2`,
     [playerCardId, discordId]
   );
@@ -554,6 +580,8 @@ module.exports = {
   getCatForAction,
   applyDown,
   reviveCat,
+  setCurrentHp,
+  healCat,
   restoreConfidence,
   getStoryProgress,
   setStoryProgress,

@@ -29,6 +29,8 @@ const LOW_HP_HEAL_THRESHOLD = 0.6;
 // Make a mutable battle actor from a combatant descriptor.
 function toActor(c, side, index) {
   const maxHp = Math.max(1, Math.round(c.stats.hp));
+  // Attrition: party cats start from their carried-over HP (capped to max, min 1).
+  const startHp = c.startHp != null ? Math.max(1, Math.min(maxHp, Math.round(c.startHp))) : maxHp;
   return {
     side,                 // 'party' | 'enemy'
     index,
@@ -42,7 +44,7 @@ function toActor(c, side, index) {
     spd: Math.round(c.stats.spd),
     crit: Number(c.stats.crit) || 0,
     maxHp,
-    hp: maxHp,
+    hp: startHp,
     focus: FOCUS_START,
     atkBuffTurns: 0,        // Rally: +25% atk while > 0
   };
@@ -133,7 +135,12 @@ function simulateBattle(party, enemies, seed) {
     maxHp: a.maxHp,
   }));
 
-  return { result, turns, log, survivors, downedIds, combatants };
+  // Party HP at fight end — the controller persists this (attrition).
+  const partyFinalHp = actors
+    .filter(a => a.side === 'party')
+    .map(a => ({ id: a.id, hp: Math.max(0, Math.round(a.hp)), maxHp: a.maxHp }));
+
+  return { result, turns, log, survivors, downedIds, combatants, partyFinalHp };
 }
 
 function takeTurn(actor, actors, rng, emit) {

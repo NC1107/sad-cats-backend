@@ -30,6 +30,9 @@ function shapeCat(row, isMember, now = Date.now()) {
   const lifetimeDowns = Number(row.lifetime_downs) || 0;
   const downedUntil = row.downed_until ? new Date(row.downed_until).getTime() : null;
   const downed = downedUntil != null && downedUntil > now;
+  const stats = rpgStats.deriveStats(row, level);
+  const maxHp = stats.hp;
+  const currentHp = downed ? 0 : rpgStats.effectiveHp(row.current_hp, row.hp_updated_at, maxHp, now);
   // Stamina is null until the cat's stat row exists; treat as full pool.
   let stamina = rpgStats.staminaCap(isMember);
   if (row.stamina != null && row.stamina_updated_at) {
@@ -57,7 +60,9 @@ function shapeCat(row, isMember, now = Date.now()) {
     staminaCap: rpgStats.staminaCap(isMember),
     role: role.role,
     special: role.special,
-    stats: rpgStats.deriveStats(row, level),
+    currentHp,
+    maxHp,
+    stats,
   };
 }
 
@@ -203,6 +208,7 @@ function buildPartyCombatants(rows, partySlots, discordId, now = Date.now(), bus
     const downedUntil = row.downed_until ? new Date(row.downed_until).getTime() : null;
     if (downedUntil && downedUntil > now) continue;
     const level = Number(row.level) || 1;
+    const stats = rpgStats.deriveStats(row, level);
     bySlot[slot] = {
       playerCardId: row.player_card_id,
       discordId,
@@ -214,7 +220,8 @@ function buildPartyCombatants(rows, partySlots, discordId, now = Date.now(), bus
       level,
       xp: Number(row.xp) || 0,
       maxLevelReduction: Number(row.max_level_reduction) || 0,
-      stats: rpgStats.deriveStats(row, level),
+      startHp: rpgStats.effectiveHp(row.current_hp, row.hp_updated_at, stats.hp, now),
+      stats,
     };
   }
   return bySlot.filter(Boolean);
@@ -314,6 +321,22 @@ const startCombat = async (req, res, next) => {
       else if (ePow > pPow * 1.3) verdict = 'Out-gunned — level up or bring stronger cats.';
       else verdict = 'A close loss — swap a cat or try again.';
     }
+
+    // Persist carried-over HP (attrition). Survivors keep their remaining HP;
+    // a cat KO'd on a WIN revives to 25% max; downed cats (loss) are already at
+    // 0 via applyDown, so skip them here.
+    const downedSet = new Set(battle.result === 'loss' ? (battle.downedIds || []) : []);
+    const finalById = new Map((battle.partyFinalHp || []).map(p => [p.id, p]));
+    await withTransaction(async (client) => {
+      for (const cat of party) {
+        if (downedSet.has(cat.playerCardId)) continue;
+        const f = finalById.get(cat.playerCardId);
+        if (!f) continue;
+        let hp = f.hp;
+        if (battle.result === 'win' && hp <= 0) hp = Math.floor(f.maxHp * 0.25);
+        await rpgModel.setCurrentHp(cat.playerCardId, cat.discordId, cat.cardId, hp, f.maxHp, client);
+      }
+    });
 
     await rpgModel.insertCombatSession({
       discordId,
@@ -687,12 +710,44 @@ const getEncounterPreview = async (req, res, next) => {
   }
 };
 
+/**
+ * POST /api/rpg/cats/:id/heal
+ * Instantly full-heal a hurt cat for catnip (cost scales with damage taken).
+ */
+const healCat = async (req, res, next) => {
+  try {
+    const discordId = req.user.data.discordId;
+    const playerCardId = req.params.id;
+    const result = await withTransaction(async (client) => {
+      const cat = await rpgModel.getCatForAction(playerCardId, discordId, client);
+      if (!cat) throw new NotFoundError('Cat not found');
+      const downedUntil = cat.downed_until ? new Date(cat.downed_until).getTime() : null;
+      if (downedUntil && downedUntil > Date.now()) throw new ValidationError('That cat is downed — revive it instead');
+      const maxHp = rpgStats.deriveStats({ rarity: cat.rarity, fun_stats: cat.fun_stats }, Number(cat.level) || 1).hp;
+      const cur = rpgStats.effectiveHp(cat.current_hp, cat.hp_updated_at, maxHp);
+      const cost = rpgStats.healCost(cur, maxHp);
+      if (cost <= 0) throw new ValidationError('That cat is already at full health');
+      const remaining = await cardModel.spendCatnip(discordId, cost, client);
+      if (remaining === null) {
+        const bal = await cardModel.getCatnip(discordId, client);
+        throw new ValidationError(`Not enough catnip — healing costs ${cost}, you have ${bal}`);
+      }
+      await rpgModel.healCat(playerCardId, discordId, client);
+      return { cost, catnipBalance: remaining };
+    });
+    res.json({ success: true, ...result });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   getCats,
   getParty,
   setParty,
   startCombat,
   getEncounterPreview,
+  healCat,
   getStory,
   getDispatch,
   acceptDispatch,

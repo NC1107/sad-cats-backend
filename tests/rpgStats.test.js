@@ -121,6 +121,24 @@ describe('rpgStats combat stakes', () => {
     expect(rpgStats.threatFor(100, 0).tier).toBe('safe');      // no enemies → safe
   });
 
+  test('effectiveHp regenerates toward max over 15 min; null = full', () => {
+    const now = Date.now()
+    expect(rpgStats.effectiveHp(null, null, 200, now)).toBe(200)        // null = full
+    expect(rpgStats.effectiveHp(100, null, 200, now)).toBe(100)        // no anchor → as stored
+    // half the full-heal window (7.5 min) heals ~50% of max
+    const half = new Date(now - rpgStats.FULL_HEAL_MS / 2).toISOString()
+    expect(rpgStats.effectiveHp(0, half, 200, now)).toBe(100)
+    // past the window → capped at max
+    const long = new Date(now - rpgStats.FULL_HEAL_MS * 3).toISOString()
+    expect(rpgStats.effectiveHp(50, long, 200, now)).toBe(200)
+  })
+
+  test('healCost scales with damage taken, capped at 25, free when full', () => {
+    expect(rpgStats.healCost(200, 200)).toBe(0)   // full
+    expect(rpgStats.healCost(100, 200)).toBe(13)  // 50% missing → ceil(12.5)
+    expect(rpgStats.healCost(0, 200)).toBe(25)    // all missing → cap
+  })
+
   test('effectiveLevelCap subtracts reduction but never below current level or 10', () => {
     // epic base cap 35
     expect(rpgStats.effectiveLevelCap('epic', 0, 1)).toBe(35);
