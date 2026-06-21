@@ -281,6 +281,8 @@ const startCombat = async (req, res, next) => {
       turns: battle.turns,
       log: battle.log,
       survivors: battle.survivors,
+      combatants: battle.combatants,
+      encounter: { id: node.id, districtName: node.districtName, tier: node.tier, elite: node.elite },
       rewardsGranted: isFirstClear,
       rewards,
     });

@@ -34,6 +34,7 @@ function toActor(c, side, index) {
     index,
     id: c.playerCardId || `${side}_${index}`,
     name: c.name || c.catName || 'Cat',
+    spriteId: c.cardId || null,   // card id for the party sprite; null for enemies
     role: c.role || 'Striker',
     buffValue: Number(c.buffValue) || 0,
     atk: Math.round(c.stats.atk),
@@ -116,7 +117,18 @@ function simulateBattle(party, enemies, seed) {
     .filter(a => a.side === 'party' && alive(a))
     .map(a => a.id);
 
-  return { result, turns, log, survivors };
+  // Roster for client-side playback (maxHp is unchanged by the sim; the client
+  // replays the log to drain HP from these starting values).
+  const combatants = actors.map(a => ({
+    id: a.id,
+    name: a.name,
+    side: a.side,
+    role: a.role,
+    spriteId: a.spriteId,
+    maxHp: a.maxHp,
+  }));
+
+  return { result, turns, log, survivors, combatants };
 }
 
 function takeTurn(actor, actors, rng, emit) {
@@ -130,7 +142,7 @@ function takeTurn(actor, actors, rng, emit) {
       const heal = Math.round(20 + actor.buffValue * 200);
       wounded.hp = Math.min(wounded.maxHp, wounded.hp + heal);
       actor.focus -= SPECIAL_COST;
-      emit(`${actor.name} purrs, healing ${wounded.name} for ${heal}`, { type: 'heal' });
+      emit(`${actor.name} purrs, healing ${wounded.name} for ${heal}`, { type: 'heal', actorId: actor.id, targetId: wounded.id, heal });
       return;
     }
   }
@@ -139,7 +151,7 @@ function takeTurn(actor, actors, rng, emit) {
   if (role === 'Support' && canSpecial) {
     actors.filter(a => a.side === actor.side && alive(a)).forEach(a => { a.atkBuffTurns = 2; });
     actor.focus -= SPECIAL_COST;
-    emit(`${actor.name} rallies the party (+25% ATK, 2 turns)`, { type: 'buff' });
+    emit(`${actor.name} rallies the party (+25% ATK, 2 turns)`, { type: 'buff', actorId: actor.id });
     return;
   }
 
@@ -153,7 +165,7 @@ function takeTurn(actor, actors, rng, emit) {
     const dmg = computeDamage(actor, target, mult, false, crit);
     target.hp -= dmg;
     actor.focus -= SPECIAL_COST;
-    emit(`${actor.name} pounces ${target.name} for ${dmg}${crit ? ' (CRIT)' : ''}`, { type: 'special', dmg, targetId: target.id });
+    emit(`${actor.name} pounces ${target.name} for ${dmg}${crit ? ' (CRIT)' : ''}`, { type: 'special', dmg, targetId: target.id, actorId: actor.id });
     return;
   }
   if (canSpecial && role === 'Skirmisher') {
@@ -162,7 +174,7 @@ function takeTurn(actor, actors, rng, emit) {
       const crit = rng() < actor.crit / 100;
       const dmg = computeDamage(actor, target, 0.7, false, crit);
       target.hp -= dmg;
-      emit(`${actor.name} flurries ${target.name} for ${dmg}${crit ? ' (CRIT)' : ''}`, { type: 'special', dmg, targetId: target.id });
+      emit(`${actor.name} flurries ${target.name} for ${dmg}${crit ? ' (CRIT)' : ''}`, { type: 'special', dmg, targetId: target.id, actorId: actor.id });
     }
     return;
   }
@@ -171,7 +183,7 @@ function takeTurn(actor, actors, rng, emit) {
     const dmg = computeDamage(actor, target, 1, true, crit); // ignores DEF
     target.hp -= dmg;
     actor.focus -= SPECIAL_COST;
-    emit(`${actor.name} rends ${target.name} for ${dmg}${crit ? ' (CRIT)' : ''}`, { type: 'special', dmg, targetId: target.id });
+    emit(`${actor.name} rends ${target.name} for ${dmg}${crit ? ' (CRIT)' : ''}`, { type: 'special', dmg, targetId: target.id, actorId: actor.id });
     return;
   }
 
@@ -179,7 +191,7 @@ function takeTurn(actor, actors, rng, emit) {
   const crit = rng() < actor.crit / 100;
   const dmg = computeDamage(actor, target, 1, false, crit);
   target.hp -= dmg;
-  emit(`${actor.name} hits ${target.name} for ${dmg}${crit ? ' (CRIT)' : ''}`, { type: 'attack', dmg, targetId: target.id });
+  emit(`${actor.name} hits ${target.name} for ${dmg}${crit ? ' (CRIT)' : ''}`, { type: 'attack', dmg, targetId: target.id, actorId: actor.id });
 }
 
 module.exports = {

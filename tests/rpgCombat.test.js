@@ -50,6 +50,32 @@ describe('rpg-combat.simulateBattle', () => {
     expect(r.survivors).toEqual([]);
   });
 
+  test('returns a combatants roster with maxHp for both sides (for client playback)', () => {
+    const party = [cat('Striker', STRONG, 'p1'), cat('Sustain', STRONG, 'p2')]
+    const enemies = [enemy(WEAK, 'e1'), enemy(WEAK, 'e2')]
+    const r = simulateBattle(party, enemies, 42)
+    expect(r.combatants).toHaveLength(4)
+    const p1 = r.combatants.find(c => c.id === 'p1')
+    expect(p1).toMatchObject({ side: 'party', maxHp: STRONG.hp })
+    expect(r.combatants.filter(c => c.side === 'enemy')).toHaveLength(2)
+    // every combatant carries the fields the battle screen needs
+    r.combatants.forEach(c => {
+      expect(c).toHaveProperty('name')
+      expect(c).toHaveProperty('role')
+      expect(c.maxHp).toBeGreaterThan(0)
+    })
+  })
+
+  test('damage/heal log entries carry actorId + targetId for animation', () => {
+    const party = [cat('Striker', STRONG, 'p1')]
+    const enemies = [enemy({ hp: 300, atk: 30, def: 15, spd: 12, crit: 0 }, 'e1')]
+    const r = simulateBattle(party, enemies, 5)
+    const dmg = r.log.find(l => l.type === 'attack' || l.type === 'special')
+    expect(dmg.actorId).toBeDefined()
+    expect(dmg.targetId).toBeDefined()
+    expect(typeof dmg.dmg).toBe('number')
+  })
+
   test('log entries reference turns and never exceed the cap', () => {
     const party = [cat('Skirmisher', STRONG, 'p1')];
     const enemies = [enemy({ hp: 200, atk: 30, def: 20, spd: 12, crit: 0 }, 'e1')];
