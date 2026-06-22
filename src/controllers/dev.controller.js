@@ -12,6 +12,15 @@ const DEV_USER = {
   avatarUrl: 'https://cdn.discordapp.com/embed/avatars/0.png',
 };
 
+// A separate identity for validating the brand-new-player path: never seeded,
+// so it lands on the starter picker with zero cats. Resettable via { reset:true }.
+const FRESH_USER = {
+  userId: 'dev-fresh',
+  discordId: '100000000000000002',
+  username: 'FreshCat',
+  avatarUrl: 'https://cdn.discordapp.com/embed/avatars/1.png',
+};
+
 // A spread of catalog cards (incl. a couple duplicates) so the roster, party
 // (4 slots), and dispatch (up to 4 cats) all have something to work with.
 const SEED_CARD_IDS = [
@@ -36,7 +45,13 @@ const SEED_CARD_IDS = [
 const devLogin = async (req, res, next) => {
   try {
     const asMember = req.body?.asMember !== false; // default true
-    const { discordId, username, avatarUrl } = DEV_USER;
+    // { fresh:true } → log in as the un-seeded new-player identity (zero cats).
+    // { fresh:true, reset:true } → also wipe its RPG state first, for a clean
+    // from-scratch playtest. `reset` is ignored for the normal dev user.
+    const fresh = req.body?.fresh === true;
+    const reset = req.body?.reset === true;
+    const identity = fresh ? FRESH_USER : DEV_USER;
+    const { discordId, username, avatarUrl } = identity;
 
     // Upsert the user row (FK target for cards / RPG tables). Don't touch score.
     await pool.query(
@@ -47,20 +62,39 @@ const devLogin = async (req, res, next) => {
       [discordId, username, avatarUrl]
     );
 
-    // Seed cards only if the dev user has none yet.
-    const existing = await pool.query('SELECT COUNT(*)::int AS n FROM player_cards WHERE discord_id = $1', [discordId]);
-    if ((existing.rows[0]?.n || 0) === 0) {
-      for (const cardId of SEED_CARD_IDS) {
-        try {
-          await cardModel.insertPlayerCard(discordId, cardId, 'dev', false);
-        } catch (e) {
-          logger.warn('dev seed: skipped a card', { cardId, error: e.message });
-        }
+    // Wipe the fresh account's RPG/collection state for a true from-scratch run.
+    // Scoped to FRESH_USER only — never the real dev user or anyone else.
+    if (fresh && reset && discordId === FRESH_USER.discordId) {
+      // player_cat_stats + player_party cascade from player_cards on delete.
+      for (const sql of [
+        'DELETE FROM player_cards WHERE discord_id = $1',
+        'DELETE FROM player_story_progress WHERE discord_id = $1',
+        'DELETE FROM player_story_claims WHERE discord_id = $1',
+        'DELETE FROM rpg_starter_grants WHERE discord_id = $1',
+        'DELETE FROM inventory_toys WHERE discord_id = $1',
+      ]) {
+        await pool.query(sql, [discordId]).catch(e => logger.warn('dev reset skip', { sql, error: e.message }));
       }
-      logger.info('dev login: seeded starter cards', { discordId, count: SEED_CARD_IDS.length });
+      logger.info('dev login: reset fresh account', { discordId });
     }
 
-    const token = generateToken({ ...DEV_USER, isMember: asMember });
+    // Seed cards only for the normal dev user, and only if it has none yet. The
+    // fresh identity is never seeded — that's the whole point of it.
+    if (!fresh) {
+      const existing = await pool.query('SELECT COUNT(*)::int AS n FROM player_cards WHERE discord_id = $1', [discordId]);
+      if ((existing.rows[0]?.n || 0) === 0) {
+        for (const cardId of SEED_CARD_IDS) {
+          try {
+            await cardModel.insertPlayerCard(discordId, cardId, 'dev', false);
+          } catch (e) {
+            logger.warn('dev seed: skipped a card', { cardId, error: e.message });
+          }
+        }
+        logger.info('dev login: seeded starter cards', { discordId, count: SEED_CARD_IDS.length });
+      }
+    }
+
+    const token = generateToken({ ...identity, isMember: asMember });
     res.json({
       success: true,
       token,

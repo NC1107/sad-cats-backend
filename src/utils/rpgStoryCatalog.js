@@ -73,14 +73,18 @@ function buildEnemy(level, name) {
  */
 function buildEnemies(chapter, node) {
   const depth = nodeDepth(chapter, node);
-  const level = depth + 1;
+  // Enemy level tracks node depth (ch1: 1–5). Was depth+1, but that put even the
+  // first node above a fresh starting party; anchoring at depth lets the L3
+  // starter party clear the tutorial chapter while later chapters still ramp.
+  const level = depth;
   const elite = isElite(node);
   const count = elite ? 3 : (node >= 3 ? 3 : 2);
   const enemies = [];
   for (let i = 0; i < count; i++) {
     const name = ENEMY_NAMES[(depth + i) % ENEMY_NAMES.length];
-    // Elite's last enemy is the mini-boss: +50% level.
-    const lvl = elite && i === count - 1 ? Math.round(level * 1.5) : level;
+    // Elite's last enemy is the mini-boss: +35% level (was +50%, too spiky for
+    // the early chapters relative to the player's level).
+    const lvl = elite && i === count - 1 ? Math.round(level * 1.35) : level;
     enemies.push(buildEnemy(lvl, elite && i === count - 1 ? `${name} (Elite)` : name));
   }
   return enemies;
