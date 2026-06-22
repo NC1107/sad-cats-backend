@@ -229,10 +229,11 @@ function buildPartyCombatants(rows, partySlots, discordId, now = Date.now(), bus
 
 /**
  * POST /api/rpg/combat/start
- * Resolve a turn-based fight against a story node, server-side. Rewards (XP +
- * catnip + guaranteed chapter card) are granted only on the FIRST clear of the
- * player's current node — replays return the fight result with no rewards
- * (stamina-gated grinding arrives with the dispatch phase).
+ * Resolve a turn-based fight against a story node, server-side. Full rewards
+ * (XP + catnip + guaranteed chapter card + story advance) are granted only on
+ * the FIRST clear of the player's current node. Replaying an already-cleared
+ * node grants a small, repeatable XP-only trickle (no catnip — see below) so
+ * grinding still levels cats. A loss grants nothing.
  */
 const startCombat = async (req, res, next) => {
   try {
@@ -255,15 +256,20 @@ const startCombat = async (req, res, next) => {
 
     const currentNode = await rpgModel.getStoryProgress(discordId);
     const isFirstClear = battle.result === 'win' && encounterId === currentNode;
+    const isReplayWin = battle.result === 'win' && !isFirstClear;
 
     let rewards = { catnip: 0, xpEach: 0, leveledUp: [], cardGranted: null, advancedTo: null };
+    // 'first-clear' = full rewards + story advance; 'replay' = small XP-only
+    // trickle; 'none' = a loss. Drives the post-battle reward screen on the client.
+    let rewardKind = battle.result === 'win' ? (isFirstClear ? 'first-clear' : 'replay') : 'none';
+
+    const maxEnemyLevel = node.enemies.reduce((m, e) => Math.max(m, e.level), 1);
+    const survivorIds = new Set(battle.survivors);
+    const survivors = party.filter(p => survivorIds.has(p.playerCardId));
 
     if (isFirstClear) {
       const tier = node.tier;
-      const maxEnemyLevel = node.enemies.reduce((m, e) => Math.max(m, e.level), 1);
       const catnip = 5 + 2 * tier;
-      const survivorIds = new Set(battle.survivors);
-      const survivors = party.filter(p => survivorIds.has(p.playerCardId));
       const xpEach = survivors.length ? Math.floor((10 + 4 * maxEnemyLevel) / survivors.length) : 0;
 
       rewards = await withTransaction(async (client) => {
@@ -289,6 +295,22 @@ const startCombat = async (req, res, next) => {
         if (next) await rpgModel.setStoryProgress(discordId, next, client);
 
         return { catnip, xpEach, leveledUp, cardGranted, advancedTo: next };
+      });
+    } else if (isReplayWin) {
+      // Replaying an already-cleared node grants a small, repeatable XP trickle so
+      // grinding still levels cats — but NO catnip. Combat isn't stamina-gated, so a
+      // repeatable catnip payout would be an uncapped currency faucet. XP is
+      // self-limiting (per-rarity level caps + the +30% rosterBonus cap), so it's
+      // safe to repeat. ~40% of a first-clear's XP, min 1.
+      const xpEach = survivors.length ? Math.max(1, Math.floor((10 + 4 * maxEnemyLevel) * 0.4 / survivors.length)) : 0;
+
+      rewards = await withTransaction(async (client) => {
+        const leveledUp = [];
+        for (const cat of survivors) {
+          const r = await rpgModel.grantXp(cat, xpEach, client);
+          if (r.leveledUp) leveledUp.push({ playerCardId: cat.playerCardId, level: r.level });
+        }
+        return { catnip: 0, xpEach, leveledUp, cardGranted: null, advancedTo: null };
       });
     }
 
@@ -358,7 +380,8 @@ const startCombat = async (req, res, next) => {
       downedIds: battle.downedIds,
       combatants: battle.combatants,
       encounter: { id: node.id, districtName: node.districtName, tier: node.tier, elite: node.elite },
-      rewardsGranted: isFirstClear,
+      rewardsGranted: isFirstClear || isReplayWin,
+      rewardKind, // 'first-clear' | 'replay' | 'none' — drives the post-battle reward screen
       rewards,
       downs, // [{ playerCardId, restMinutes, confidenceDropped, maxLevelReduction }] on a loss
       verdict, // plain-language loss reason, null on a win
