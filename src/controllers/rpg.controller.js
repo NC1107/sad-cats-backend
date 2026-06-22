@@ -192,6 +192,57 @@ const setParty = async (req, res, next) => {
   }
 };
 
+// Curated starter cats — one common per distinct role so a new player picks the
+// playstyle they like. (No common 'auto'/Skirmisher exists, so that role is out.)
+// Roles are derived from buff_type: click→Striker, passive→Sustain, boss→Breaker,
+// all→Support. The frontend renders name/sprite/description from its card catalog.
+const STARTER_CARD_IDS = ['shadow', 'hazel', 'timber', 'ginger'];
+
+/**
+ * GET /api/rpg/starter
+ * Whether this player can claim a one-time free starter cat (true only while they
+ * own zero cards) and the options to choose from.
+ */
+const getStarter = async (req, res, next) => {
+  try {
+    const discordId = req.user.data.discordId;
+    const rows = await rpgModel.getCatRows(discordId);
+    res.json({ success: true, eligible: rows.length === 0, options: STARTER_CARD_IDS });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * POST /api/rpg/starter/claim — { cardId }
+ * Grant the chosen starter. Only for brand-new players (zero cards) — re-checked
+ * inside the transaction so it can't be claimed twice or used to top up a roster.
+ */
+const claimStarter = async (req, res, next) => {
+  try {
+    const discordId = req.user.data.discordId;
+    const { cardId } = req.body || {};
+    if (!STARTER_CARD_IDS.includes(cardId)) {
+      throw new ValidationError('Pick one of the starter cats');
+    }
+
+    const granted = await withTransaction(async (client) => {
+      const rows = await rpgModel.getCatRows(discordId, client);
+      if (rows.length > 0) {
+        throw new ConflictError('The starter cat is only for new players — you already have cats');
+      }
+      const pc = await cardModel.insertPlayerCard(discordId, cardId, 'starter', false, client);
+      await rpgModel.ensureStatRow(discordId, cardId, pc.id, client);
+      return pc;
+    });
+
+    logger.info('Starter cat claimed', { discordId, cardId });
+    res.json({ success: true, cardId, playerCardId: granted.id });
+  } catch (error) {
+    next(error);
+  }
+};
+
 /**
  * Build combat-ready party combatants from the player's active slots.
  * Returns [] if the party is empty.
@@ -745,6 +796,8 @@ module.exports = {
   getCats,
   getParty,
   setParty,
+  getStarter,
+  claimStarter,
   startCombat,
   getEncounterPreview,
   healCat,

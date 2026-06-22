@@ -2,9 +2,9 @@ const express = require('express');
 const { authenticate } = require('../middleware/auth');
 const { apiLimiter } = require('../middleware/rateLimiter');
 const { validateRequest } = require('../middleware/validateRequest');
-const { setPartySchema, startCombatSchema, acceptDispatchSchema } = require('../validators/rpg.validator');
+const { setPartySchema, startCombatSchema, acceptDispatchSchema, claimStarterSchema } = require('../validators/rpg.validator');
 const {
-  getCats, getParty, setParty, startCombat, getEncounterPreview, getStory,
+  getCats, getParty, setParty, getStarter, claimStarter, startCombat, getEncounterPreview, getStory,
   getDispatch, acceptDispatch, collectDispatch, getDaily, claimDaily,
   reviveCat, restoreConfidence, healCat,
 } = require('../controllers/rpg.controller');
@@ -19,6 +19,10 @@ router.get('/party', authenticate, apiLimiter, getParty);
 
 // Replace the active party (ownership + no-dup validated server-side)
 router.put('/party', authenticate, apiLimiter, validateRequest(setPartySchema), setParty);
+
+// One-time free starter cat for brand-new players (zero cards)
+router.get('/starter', authenticate, apiLimiter, getStarter);
+router.post('/starter/claim', authenticate, apiLimiter, validateRequest(claimStarterSchema), claimStarter);
 
 // Story node map + this player's progress
 router.get('/story', authenticate, apiLimiter, getStory);

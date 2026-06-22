@@ -28,8 +28,17 @@ const acceptDispatchSchema = z.object({
   }).strip(),
 });
 
+// POST /api/rpg/starter/claim — { cardId }. The cardId must be one of the
+// curated starter options; that allow-list check happens in the controller.
+const claimStarterSchema = z.object({
+  body: z.object({
+    cardId: z.string().min(1).max(64),
+  }).strip(),
+});
+
 module.exports = {
   setPartySchema,
   startCombatSchema,
   acceptDispatchSchema,
+  claimStarterSchema,
 };
