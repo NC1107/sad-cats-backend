@@ -37,6 +37,7 @@ function toActor(c, side, index) {
     id: c.playerCardId || `${side}_${index}`,
     name: c.name || c.catName || 'Cat',
     spriteId: c.cardId || null,   // card id for the party sprite; null for enemies
+    isBoss: !!c.isBoss,           // district boss → rendered larger on the client
     role: c.role || 'Striker',
     buffValue: Number(c.buffValue) || 0,
     atk: Math.round(c.stats.atk),
@@ -134,6 +135,7 @@ function simulateBattle(party, enemies, seed) {
     side: a.side,
     role: a.role,
     spriteId: a.spriteId,
+    isBoss: a.isBoss,
     maxHp: a.maxHp,
     startHp: a.startHp,
     // Stats so the client can show what each combatant (incl. enemies) brings.
