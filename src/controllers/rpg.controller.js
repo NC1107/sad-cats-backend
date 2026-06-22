@@ -359,7 +359,16 @@ const startCombat = async (req, res, next) => {
         const leveledUp = [];
         for (const cat of survivors) {
           const r = await rpgModel.grantXp(cat, xpEach, client);
-          if (r.leveledUp) leveledUp.push({ playerCardId: cat.playerCardId, level: r.level });
+          if (r.leveledUp) {
+            const before = rpgStats.deriveStats(cat, cat.level);
+            const after = rpgStats.deriveStats(cat, r.level);
+            leveledUp.push({
+              playerCardId: cat.playerCardId,
+              level: r.level,
+              fromLevel: cat.level,
+              gains: { hp: after.hp - before.hp, atk: after.atk - before.atk, def: after.def - before.def, spd: after.spd - before.spd },
+            });
+          }
         }
         await cardModel.addCatnip(discordId, catnip, client);
 
@@ -391,7 +400,16 @@ const startCombat = async (req, res, next) => {
         const leveledUp = [];
         for (const cat of survivors) {
           const r = await rpgModel.grantXp(cat, xpEach, client);
-          if (r.leveledUp) leveledUp.push({ playerCardId: cat.playerCardId, level: r.level });
+          if (r.leveledUp) {
+            const before = rpgStats.deriveStats(cat, cat.level);
+            const after = rpgStats.deriveStats(cat, r.level);
+            leveledUp.push({
+              playerCardId: cat.playerCardId,
+              level: r.level,
+              fromLevel: cat.level,
+              gains: { hp: after.hp - before.hp, atk: after.atk - before.atk, def: after.def - before.def, spd: after.spd - before.spd },
+            });
+          }
         }
         return { catnip: 0, xpEach, leveledUp, cardGranted: null, advancedTo: null };
       });
