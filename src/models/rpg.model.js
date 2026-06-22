@@ -436,17 +436,23 @@ const insertDispatch = async (discordId, questId, endsAt, playerCardIds, executo
 
 /** Fetch one dispatch (with its cats) belonging to the user, locked for collect. */
 const getDispatchForCollect = async (dispatchId, discordId, executor = pool) => {
-  const result = await executor.query(
-    `SELECT d.id, d.quest_id, d.ends_at, d.collected,
-            COALESCE(array_agg(m.player_card_id) FILTER (WHERE m.player_card_id IS NOT NULL), '{}') AS card_ids
-     FROM player_dispatches d
-     LEFT JOIN player_dispatch_members m ON m.dispatch_id = d.id
-     WHERE d.id = $1 AND d.discord_id = $2
-     GROUP BY d.id
-     FOR UPDATE OF d`,
+  // Postgres forbids FOR UPDATE with GROUP BY/aggregates, so lock the dispatch
+  // row first, then fetch its members separately (same transaction).
+  const dRes = await executor.query(
+    `SELECT id, quest_id, ends_at, collected
+     FROM player_dispatches
+     WHERE id = $1 AND discord_id = $2
+     FOR UPDATE`,
     [dispatchId, discordId]
   );
-  return result.rows[0] || null;
+  const d = dRes.rows[0];
+  if (!d) return null;
+  const mRes = await executor.query(
+    'SELECT player_card_id FROM player_dispatch_members WHERE dispatch_id = $1',
+    [dispatchId]
+  );
+  d.card_ids = mRes.rows.map(r => r.player_card_id);
+  return d;
 };
 
 const markDispatchCollected = async (dispatchId, executor = pool) => {
