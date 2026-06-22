@@ -10,20 +10,22 @@
  * hand-author 45 stat blocks.
  */
 
+// Each district has its own themed enemy pool + a named elite (the chapter's 5th
+// node mini-boss). Enemy stats are still generated from depth (see buildEnemy);
+// the names only drive flavor + which sprite archetype the frontend draws.
 const DISTRICTS = [
-  { name: 'The Alley',        reward: 'slate' },     // uncommon
-  { name: 'The Fish Market',  reward: 'specter' },   // legendary
-  { name: 'The Rooftops',     reward: 'blossom' },   // rare
-  { name: 'The Docks',        reward: 'midas' },     // legendary
-  { name: 'The Cannery',      reward: 'cartridge' }, // epic
-  { name: 'The Night Market', reward: 'nebula' },    // epic
-  { name: 'The Archive',      reward: 'crimson' },   // rare
-  { name: 'The Void',         reward: 'eclipse' },   // epic
-  { name: 'The Summit',       reward: 'isotope' },   // mythic
+  { name: 'The Alley',        reward: 'slate',     enemies: ['Dust Bunny', 'Alley Rat', 'Trash Goblin'],   elite: 'Alpha Stray' },     // uncommon
+  { name: 'The Fish Market',  reward: 'specter',   enemies: ['Gull Mob', 'Crab Pincer', 'Fish Thief'],     elite: 'Market Tom' },      // legendary
+  { name: 'The Rooftops',     reward: 'blossom',   enemies: ['Pigeon Swarm', 'Antenna Bat', 'Chimney Imp'], elite: 'The Roof Tom' },    // rare
+  { name: 'The Docks',        reward: 'midas',     enemies: ['Dock Rat', 'Barnacle Brute', 'Cargo Golem'], elite: 'Harbor Kraken' },   // legendary
+  { name: 'The Cannery',      reward: 'cartridge', enemies: ['Rust Golem', 'Tin Wraith', 'Gear Gremlin'],  elite: 'The Cannery Golem' }, // epic
+  { name: 'The Night Market', reward: 'nebula',    enemies: ['Lantern Wisp', 'Neon Stray', 'Firework Imp'], elite: 'Smoke Phantom' },   // epic
+  { name: 'The Archive',      reward: 'crimson',   enemies: ['Ink Blob', 'Paper Wraith', 'Cipher Sprite'], elite: 'The Tome Golem' },   // rare
+  { name: 'The Void',         reward: 'eclipse',   enemies: ['Void Bunny', 'Null Golem', 'Glitch Cat'],    elite: 'The Void Maw' },     // epic
+  { name: 'The Summit',       reward: 'isotope',   enemies: ['Star Lynx', 'Comet Slime', 'Cosmic Wraith'], elite: 'The Last Meow' },    // mythic
 ];
 
 const NODES_PER_CHAPTER = 5;
-const ENEMY_NAMES = ['Dust Bunny', 'Lint Golem', 'Bad Dog', 'Alley Rat', 'Stray', 'Gutter Wraith'];
 
 /** Parse 'ch3_n2' → { chapter: 3, node: 2 } (1-indexed) or null. */
 function parseNodeId(nodeId) {
@@ -79,13 +81,16 @@ function buildEnemies(chapter, node) {
   const level = depth;
   const elite = isElite(node);
   const count = elite ? 3 : (node >= 3 ? 3 : 2);
+  const pool = DISTRICTS[chapter - 1].enemies;
+  const eliteName = DISTRICTS[chapter - 1].elite;
   const enemies = [];
   for (let i = 0; i < count; i++) {
-    const name = ENEMY_NAMES[(depth + i) % ENEMY_NAMES.length];
-    // Elite's last enemy is the mini-boss: +35% level (was +50%, too spiky for
-    // the early chapters relative to the player's level).
-    const lvl = elite && i === count - 1 ? Math.round(level * 1.35) : level;
-    enemies.push(buildEnemy(lvl, elite && i === count - 1 ? `${name} (Elite)` : name));
+    const isBoss = elite && i === count - 1;
+    // Elite's last enemy is the district's named mini-boss: +35% level (was +50%,
+    // too spiky for the early chapters relative to the player's level).
+    const lvl = isBoss ? Math.round(level * 1.35) : level;
+    const name = isBoss ? `${eliteName} (Elite)` : pool[(depth + i) % pool.length];
+    enemies.push(buildEnemy(lvl, name));
   }
   return enemies;
 }
