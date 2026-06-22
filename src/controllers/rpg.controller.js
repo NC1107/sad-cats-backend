@@ -212,6 +212,11 @@ const setParty = async (req, res, next) => {
 // all→Support. The frontend renders name/sprite/description from its card catalog.
 const STARTER_CARD_IDS = ['shadow', 'hazel', 'timber', 'ginger'];
 
+// The chosen hero comes with two basic commons so a new player has a real party
+// (a solo cat hits "deadly" on ch1 node 2+). mocha = Sustain healer, chestnut =
+// Striker — survivability + damage that round out any hero pick.
+const STARTER_FILLER_IDS = ['mocha', 'chestnut'];
+
 /**
  * GET /api/rpg/starter
  * Whether this player can claim a one-time free starter cat (true only while they
@@ -245,13 +250,26 @@ const claimStarter = async (req, res, next) => {
       if (rows.length > 0) {
         throw new ConflictError('The starter cat is only for new players — you already have cats');
       }
-      const pc = await cardModel.insertPlayerCard(discordId, cardId, 'starter', false, client);
-      await rpgModel.ensureStatRow(discordId, cardId, pc.id, client);
-      return pc;
+      // Hero (the player's pick) in slot 0, then the two fillers — a 3-cat party
+      // ready to fight, so a new player can actually clear the early story.
+      const partyCardIds = [cardId, ...STARTER_FILLER_IDS];
+      const playerCardIds = [];
+      for (const id of partyCardIds) {
+        const pc = await cardModel.insertPlayerCard(discordId, id, 'starter', false, client);
+        await rpgModel.ensureStatRow(discordId, id, pc.id, client);
+        // Start at L3 so the party matches the early enemy curve (ch1 enemies are
+        // L2–6); without it a fresh L1 party can't clear chapter 1's elite.
+        await rpgModel.setLevelXp(pc.id, discordId, id, 3, 0, client);
+        playerCardIds.push(pc.id);
+      }
+      for (let slot = 0; slot < playerCardIds.length; slot++) {
+        await rpgModel.insertPartySlot(discordId, playerCardIds[slot], slot, client);
+      }
+      return { heroPlayerCardId: playerCardIds[0] };
     });
 
-    logger.info('Starter cat claimed', { discordId, cardId });
-    res.json({ success: true, cardId, playerCardId: granted.id });
+    logger.info('Starter party claimed', { discordId, cardId, fillers: STARTER_FILLER_IDS });
+    res.json({ success: true, cardId, playerCardId: granted.heroPlayerCardId, fillers: STARTER_FILLER_IDS });
   } catch (error) {
     next(error);
   }
@@ -412,6 +430,10 @@ const startCombat = async (req, res, next) => {
     // Persist carried-over HP (attrition). Survivors keep their remaining HP;
     // a cat KO'd on a WIN revives to 25% max; downed cats (loss) are already at
     // 0 via applyDown, so skip them here.
+    // EXCEPTION — first clear heals the whole party to full: advancing the story
+    // gives a breather, so progression isn't gated by the 15-min HP regen (which
+    // otherwise walls a solo new player after one fight). Replays keep attrition,
+    // so grinding cleared nodes still has a cost.
     const downedSet = new Set(battle.result === 'loss' ? (battle.downedIds || []) : []);
     const finalById = new Map((battle.partyFinalHp || []).map(p => [p.id, p]));
     await withTransaction(async (client) => {
@@ -420,7 +442,8 @@ const startCombat = async (req, res, next) => {
         const f = finalById.get(cat.playerCardId);
         if (!f) continue;
         let hp = f.hp;
-        if (battle.result === 'win' && hp <= 0) hp = Math.floor(f.maxHp * 0.25);
+        if (isFirstClear) hp = f.maxHp;                                  // first clear → full heal
+        else if (battle.result === 'win' && hp <= 0) hp = Math.floor(f.maxHp * 0.25); // KO'd on a replay win → 25%
         await rpgModel.setCurrentHp(cat.playerCardId, cat.discordId, cat.cardId, hp, f.maxHp, client);
       }
     });
