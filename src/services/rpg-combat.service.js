@@ -44,6 +44,7 @@ function toActor(c, side, index) {
     spd: Math.round(c.stats.spd),
     crit: Number(c.stats.crit) || 0,
     maxHp,
+    startHp,               // HP the fight began at (carried-over attrition) — for client playback
     hp: startHp,
     focus: FOCUS_START,
     atkBuffTurns: 0,        // Rally: +25% atk while > 0
@@ -124,8 +125,9 @@ function simulateBattle(party, enemies, seed) {
     .filter(a => a.side === 'party' && !alive(a))
     .map(a => a.id);
 
-  // Roster for client-side playback (maxHp is unchanged by the sim; the client
-  // replays the log to drain HP from these starting values).
+  // Roster for client-side playback. The client replays the log to drain HP from
+  // `startHp` (a wounded cat carries reduced HP into the next fight via attrition),
+  // not from maxHp — otherwise the bar would show full while the cat is actually low.
   const combatants = actors.map(a => ({
     id: a.id,
     name: a.name,
@@ -133,6 +135,7 @@ function simulateBattle(party, enemies, seed) {
     role: a.role,
     spriteId: a.spriteId,
     maxHp: a.maxHp,
+    startHp: a.startHp,
   }));
 
   // Party HP at fight end — the controller persists this (attrition).

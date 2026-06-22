@@ -178,6 +178,20 @@ const setParty = async (req, res, next) => {
       throw new ValidationError('Party includes a cat you do not own');
     }
 
+    // A recovering (downed) cat can't hold a party slot — same rule as dispatch.
+    if (present.length) {
+      const rows = await rpgModel.getCatRows(discordId);
+      const byId = new Map(rows.map(r => [r.player_card_id, r]));
+      const now = Date.now();
+      const isDowned = (id) => {
+        const du = byId.get(id)?.downed_until ? new Date(byId.get(id).downed_until).getTime() : null;
+        return du && du > now;
+      };
+      if (present.some(isDowned)) {
+        throw new ValidationError('A recovering (downed) cat can\'t be in your party — revive it first.');
+      }
+    }
+
     await withTransaction(async (client) => {
       await rpgModel.clearParty(discordId, client);
       for (let slot = 0; slot < slots.length; slot++) {

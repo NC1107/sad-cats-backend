@@ -66,6 +66,17 @@ describe('rpg-combat.simulateBattle', () => {
     })
   })
 
+  test('combatants roster exposes startHp so wounded cats show their carried-over HP', () => {
+    // p1 carries into the fight at 100/400 HP (attrition); p2 is fresh.
+    const wounded = { ...cat('Striker', STRONG, 'p1'), startHp: 100 }
+    const fresh = cat('Sustain', STRONG, 'p2')
+    const r = simulateBattle([wounded, fresh], [enemy(WEAK, 'e1')], 7)
+    const p1 = r.combatants.find(c => c.id === 'p1')
+    const p2 = r.combatants.find(c => c.id === 'p2')
+    expect(p1).toMatchObject({ maxHp: STRONG.hp, startHp: 100 })          // bar starts at carried-over HP
+    expect(p2).toMatchObject({ maxHp: STRONG.hp, startHp: STRONG.hp })    // fresh cat starts full
+  })
+
   test('damage/heal log entries carry actorId + targetId for animation', () => {
     const party = [cat('Striker', STRONG, 'p1')]
     const enemies = [enemy({ hp: 300, atk: 30, def: 15, spd: 12, crit: 0 }, 'e1')]

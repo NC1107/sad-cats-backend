@@ -245,6 +245,12 @@ const applyDown = async (cat, executor = pool) => {
      WHERE player_card_id = $1`,
     [cat.playerCardId, restMinutes, lifetimeDowns, downsToday, today, reduction]
   );
+  // A recovering cat can't hold a party slot — eject it so the slot frees up
+  // instead of silently blocking the next fight with a "no available cats" error.
+  await executor.query(
+    'DELETE FROM player_party WHERE discord_id = $1 AND player_card_id = $2',
+    [cat.discordId, cat.playerCardId]
+  );
   return { playerCardId: cat.playerCardId, restMinutes, lifetimeDowns, confidenceDropped, maxLevelReduction: reduction };
 };
 
