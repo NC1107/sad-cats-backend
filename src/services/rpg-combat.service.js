@@ -136,6 +136,11 @@ function simulateBattle(party, enemies, seed) {
     spriteId: a.spriteId,
     maxHp: a.maxHp,
     startHp: a.startHp,
+    // Stats so the client can show what each combatant (incl. enemies) brings.
+    atk: a.atk,
+    def: a.def,
+    spd: a.spd,
+    crit: a.crit,
   }));
 
   // Party HP at fight end — the controller persists this (attrition).
