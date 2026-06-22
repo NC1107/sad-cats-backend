@@ -51,16 +51,19 @@ function isElite(node) {
   return node === NODES_PER_CHAPTER;
 }
 
-/** Generate one enemy's combat stats from its level. */
-function buildEnemy(level, name) {
+/** Generate one enemy's combat stats from its level. `opts.boss` marks a district
+ *  boss and `opts.hpMult` inflates its HP into a proper boss pool. */
+function buildEnemy(level, name, opts = {}) {
+  const hpMult = opts.hpMult || 1;
   return {
     name,
     level,
     isEnemy: true,
+    isBoss: !!opts.boss,
     role: 'Enemy',
     buffValue: 0,
     stats: {
-      hp:   Math.round(40 + level * 18),
+      hp:   Math.round((40 + level * 18) * hpMult),
       atk:  Math.round(8 + level * 2.5),
       def:  Math.round(4 + level * 1.5),
       spd:  Math.round(8 + level),
@@ -86,11 +89,17 @@ function buildEnemies(chapter, node) {
   const enemies = [];
   for (let i = 0; i < count; i++) {
     const isBoss = elite && i === count - 1;
-    // Elite's last enemy is the district's named mini-boss: +35% level (was +50%,
-    // too spiky for the early chapters relative to the player's level).
-    const lvl = isBoss ? Math.round(level * 1.35) : level;
-    const name = isBoss ? `${eliteName} (Elite)` : pool[(depth + i) % pool.length];
-    enemies.push(buildEnemy(lvl, name));
+    if (isBoss) {
+      // The chapter-ending boss: +35% level AND a big HP pool that scales with the
+      // district (ch1 ~2.5×, ch9 ~6.5×), so the final fight is a real boss check
+      // that gates the chapter's guaranteed card.
+      const bossLevel = Math.round(level * 1.35);
+      const hpMult = 2.5 + (chapter - 1) * 0.5;
+      enemies.push(buildEnemy(bossLevel, eliteName, { boss: true, hpMult }));
+      continue;
+    }
+    const name = pool[(depth + i) % pool.length];
+    enemies.push(buildEnemy(level, name));
   }
   return enemies;
 }
